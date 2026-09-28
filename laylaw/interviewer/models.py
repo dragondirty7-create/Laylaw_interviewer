@@ -303,6 +303,8 @@ class Correction:
     new_fact_id: Optional[str] = None
     status: str = "needs_target"      # "needs_target" | "applied" | "withdrawn"
     candidate_ids: list[str] = field(default_factory=list)  # items offered when asking which one
+    raw_answer_id: Optional[str] = None   # the logged answer holding the correction's words
+    span: Optional[list[int]] = None      # [start, end) of the correction content in that answer
 
 
 @dataclass

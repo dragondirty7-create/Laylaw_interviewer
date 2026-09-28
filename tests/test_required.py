@@ -63,7 +63,7 @@ def test_01_interrupted_interview_saves_and_resumes_correctly(ws, store):
     ("I don't remember", DatePrecision.UNKNOWN),
 ])
 def test_02_uncertain_and_approximate_dates_remain_uncertain(session, said, precision):
-    f = session.record_fact("Casey Lin dropped off a backpack at the house.", topic="Specific incidents",
+    f = session.record_statement("Casey Lin dropped off a backpack at the house.", topic="Specific incidents",
                             date_text=said)
     assert f.date.precision == precision
     assert f.date.original_text == said                       # the words are kept
@@ -77,7 +77,7 @@ def test_02_uncertain_and_approximate_dates_remain_uncertain(session, said, prec
 
 
 def test_02b_hedged_statement_keeps_hedge_and_never_gets_exact_date(session):
-    f = session.record_fact("I think the car was parked on the street.", topic="Specific incidents",
+    f = session.record_statement("I think the car was parked on the street.", topic="Specific incidents",
                             date_text="March 3, 2024")
     assert f.certainty == Certainty.HEDGED and "I think" in f.hedges
     assert f.statement == "I think the car was parked on the street."   # not "The car was parked..."
@@ -87,11 +87,11 @@ def test_02b_hedged_statement_keeps_hedge_and_never_gets_exact_date(session):
 
 # 3 ---------------------------------------------------------------------------
 def test_03_secondhand_information_remains_labeled_secondhand(session):
-    f = session.record_fact("A neighbor told me the gate was left open overnight.", topic="Specific incidents")
+    f = session.record_statement("A neighbor told me the gate was left open overnight.", topic="Specific incidents")
     assert f.source == SourceOfKnowledge.SECONDHAND
     # Even if a caller (or a later stage) tries to relabel it as observation,
     # the engine refuses to upgrade a reported account.
-    g = session.record_fact("The gate was left open overnight.", topic="Specific incidents",
+    g = session.record_statement("The gate was left open overnight.", topic="Specific incidents",
                             told_by="neighbor (fictional)", source=SourceOfKnowledge.PERSONAL_OBSERVATION)
     assert g.source == SourceOfKnowledge.SECONDHAND
     session._set_source(g, SourceOfKnowledge.PERSONAL_OBSERVATION)
@@ -136,7 +136,7 @@ def test_04_conflicting_date_recollections_preserved_if_unresolved(session):
 
 # 5 ---------------------------------------------------------------------------
 def test_05_document_reviewed_after_answer_does_not_overwrite_recollection(session):
-    f = session.record_fact("The court hearing was continued to a later date.", topic="Court orders",
+    f = session.record_statement("The court hearing was continued to a later date.", topic="Court orders",
                             date_text="around June 2024")
     original = (f.statement, f.date.original_text, f.date.precision)
 
@@ -161,7 +161,7 @@ def test_05_document_reviewed_after_answer_does_not_overwrite_recollection(sessi
 
 # 6 ---------------------------------------------------------------------------
 def test_06_child_reported_statement_is_secondhand_unless_adult_witnessed(session):
-    heard = session.record_fact("Pip said the dog got out of the yard at the other house.",
+    heard = session.record_statement("Pip said the dog got out of the yard at the other house.",
                                 topic="Specific incidents", told_by="Pip", told_by_is_child=True,
                                 source=SourceOfKnowledge.PERSONAL_OBSERVATION)
     assert heard.source == SourceOfKnowledge.SECONDHAND
@@ -169,7 +169,7 @@ def test_06_child_reported_statement_is_secondhand_unless_adult_witnessed(sessio
     session._set_source(heard, SourceOfKnowledge.PERSONAL_OBSERVATION)
     assert heard.source == SourceOfKnowledge.SECONDHAND
 
-    seen = session.record_fact("I saw the dog get out of the yard while Pip was with me.",
+    seen = session.record_statement("I saw the dog get out of the yard while Pip was with me.",
                                topic="Specific incidents", told_by="Pip", told_by_is_child=True,
                                witnessed_underlying_event=True,
                                source=SourceOfKnowledge.PERSONAL_OBSERVATION)
@@ -177,7 +177,7 @@ def test_06_child_reported_statement_is_secondhand_unless_adult_witnessed(sessio
     assert "Reported to interviewee by: Pip (child)" in outputs.neutral_fact_line(heard, session)
 
     # The child rule stands on its own, even when no teller name was captured.
-    unnamed = session.record_fact("The dog got out of the yard at the other house.",
+    unnamed = session.record_statement("The dog got out of the yard at the other house.",
                                   topic="Specific incidents", told_by_is_child=True,
                                   source=SourceOfKnowledge.PERSONAL_OBSERVATION)
     assert unnamed.source == SourceOfKnowledge.SECONDHAND
@@ -191,7 +191,7 @@ def test_06_child_reported_statement_is_secondhand_unless_adult_witnessed(sessio
 
 # 7 ---------------------------------------------------------------------------
 def test_07_unreviewed_records_not_described_as_proof_or_corroboration(session):
-    f = session.record_fact("I sent a text asking to swap weekends.", topic="Communication between parents",
+    f = session.record_statement("I sent a text asking to swap weekends.", topic="Communication between parents",
                             date_text="around May 2025")
     rec = session.add_upload("screenshot-FICTIONAL.png", b"\x89PNG fictional", label="Text screenshot",
                              related_fact_ids=[f.id])
@@ -228,7 +228,7 @@ def test_08_requested_outcomes_do_not_leak_into_timeline(ws):
         "A predictable shared schedule with the same exchange day each week.",
         "I'd like the exchanges to happen at the library."]
     with pytest.raises(ValueError):
-        s.record_fact("I want the court to change the schedule.", topic="Current parenting routine")
+        s.record_statement("I want the court to change the schedule.", topic="Current parenting routine")
     # Routine is kept as routine, not collapsed into an incident.
     assert s.facts[0].kind.value == "routine"
 
@@ -267,8 +267,8 @@ def test_10_two_client_workspaces_cannot_read_or_overwrite_each_other(store):
     b = store.workspace("client-fictional-b")
     sa = new_session(a, interviewee="Jordan Avery")
     sb = new_session(b, interviewee="Morgan Ellis")
-    sa.record_fact("Client A fictional fact.", topic="Specific incidents"); sa.save()
-    sb.record_fact("Client B fictional fact.", topic="Specific incidents"); sb.save()
+    sa.record_statement("Client A fictional fact.", topic="Specific incidents"); sa.save()
+    sb.record_statement("Client B fictional fact.", topic="Specific incidents"); sb.save()
 
     assert a.list_sessions() == [sa.interview_id] and b.list_sessions() == [sb.interview_id]
     with pytest.raises(FileNotFoundError):
@@ -302,7 +302,7 @@ def test_11_multiple_uploads_stay_attached_to_correct_client_and_session(store):
     s2 = new_session(a)
     s3 = new_session(b, interviewee="Morgan Ellis")
 
-    f1 = s1.record_fact("I emailed about the school pickup.", topic="Specific incidents")
+    f1 = s1.record_statement("I emailed about the school pickup.", topic="Specific incidents")
     # Uploads arrive at different points throughout the interview.
     r1 = s1.add_upload("email-FICTIONAL.eml", b"fictional email 1", related_fact_ids=[f1.id])
     s1.next_question(); s1.answer("Casey Lin brought the kids home after practice.")

@@ -253,14 +253,15 @@ def test_mixed_source_free_narrative_is_separable_by_provenance(session):
 
 # ============================================================ P1-6 discrepancies
 def test_non_date_discrepancies_preserve_both_recollections(session):
-    f = session.record_fact("Casey Lin handed over the kids.", topic="Exchanges / transportation",
+    f = session.record_statement("Casey Lin handed over the kids.", topic="Exchanges / transportation",
                             location="the library parking lot", people_present=["Casey Lin", "interviewee"])
     session.set_fact_location(f.id, "the grocery store")
     session.set_people_present(f.id, "Casey Lin and Morgan Ellis")
-    g = session.record_fact("Morgan Ellis arrived.", topic="Exchanges / transportation")
+    g = session.record_statement("Morgan Ellis arrived.", topic="Exchanges / transportation")
     session.record_sequence(f.id, "before", g.id)
     session.record_sequence(f.id, "after", g.id)
-    alt = session.record_conflicting_account(f.id, "Morgan Ellis handed over the kids.")
+    alt_raw = session.log_answer("Morgan Ellis handed over the kids.", question="Who handed over the kids?")
+    alt = session.record_conflicting_account(f.id, alt_raw.text, raw_answer_id=alt_raw.id)
 
     fields = {d.field for d in session.discrepancies}
     assert fields == {"location", "people_present", "sequence", "account"}
@@ -334,7 +335,7 @@ def test_section_selection_does_not_mechanically_require_every_family_law_sectio
 
 # ============================================================ P2-9 document candidates
 def test_document_derived_candidate_stays_candidate_until_client_confirms(session):
-    f = session.record_fact("The hearing was continued.", topic="Court orders", date_text="around June 2024")
+    f = session.record_statement("The hearing was continued.", topic="Court orders", date_text="around June 2024")
     rec = session.add_upload("order-FICTIONAL.pdf", b"fictional", label="Minute order (fictional)",
                              related_fact_ids=[f.id], source_type=SupportingSourceType.COURT_RECORD)
     cand = session.propose_document_candidate(rec.id, "date", "August 14, 2024", fact_id=f.id, page="2")
@@ -354,7 +355,7 @@ def test_document_derived_candidate_stays_candidate_until_client_confirms(sessio
 # ============================================================ P2-10 ORGANIZE boundary
 def test_organize_interface_is_separate_and_interview_keeps_seven_outputs(session):
     from laylaw.organize import ORGANIZE_PRODUCTS, NotImplementedOrganizer, export_for_organize
-    session.record_fact("I think Casey Lin was late.", topic="Specific incidents", date_text="around May 2025")
+    session.record_statement("I think Casey Lin was late.", topic="Specific incidents", date_text="around May 2025")
     assert set(outputs.all_outputs(session)) == {
         "interview_record", "fact_table", "timeline", "evidence_followup", "open_questions",
         "requested_outcomes", "handoff_summary"}
@@ -415,7 +416,7 @@ def test_hedge_covers_the_date_of_the_same_statement(session):
     f = session.facts[0]
     assert f.date.original_text == "in March 2025"
     assert f.date.precision == DatePrecision.APPROXIMATE           # not MONTH ONLY
-    firm = session.record_fact("Sam Rowe moved in March 2025.", topic="Housing", date_text="March 2025")
+    firm = session.record_statement("Sam Rowe moved in March 2025.", topic="Housing", date_text="March 2025")
     assert firm.date.precision == DatePrecision.MONTH_ONLY          # unhedged keeps its precision
 
 
@@ -442,7 +443,7 @@ def test_wrong_workspace_stops_the_interview_until_an_operator_confirms(ws):
 
 
 def test_summary_review_separates_reported_documents_and_unknown(session):
-    f = session.record_fact("Casey Lin dropped off the kids.", topic="Specific incidents",
+    f = session.record_statement("Casey Lin dropped off the kids.", topic="Specific incidents",
                             date_text="around June 2024")
     rec = session.add_upload("log-FICTIONAL.pdf", b"fictional", label="Pickup log (fictional)",
                              related_fact_ids=[f.id])

@@ -471,10 +471,55 @@ class InterviewSession:
         return item
 
     # ----------------------------------------------------------- free account / propositions
-    def _add_raw_answer(self, text: str, turn_index: int) -> RawAnswer:
-        raw = RawAnswer(f"A-{len(self.raw_answers) + 1:03d}", turn_index, self.current_section or "", text)
+    def _add_raw_answer(self, text: str, turn_index: int, section: Optional[str] = None) -> RawAnswer:
+        raw = RawAnswer(f"A-{len(self.raw_answers) + 1:03d}", turn_index,
+                        section if section is not None else (self.current_section or ""), text)
         self.raw_answers.append(raw)
         return raw
+
+    def log_answer(self, text: str, *, question: str, section: Optional[str] = None) -> RawAnswer:
+        """Log the interviewee's own answer to a question that was put to them.
+
+        Outside the question flow, this is the only way words enter the record as
+        the interviewee's: the answer is kept verbatim as a turn (with its question)
+        and as a raw answer. Facts, corrections, and alternate accounts must then be
+        exact slices of a logged answer. There is no API that attributes generated
+        or paraphrased text to the interviewee."""
+        if self.mode != Mode.INTERVIEW:
+            raise ModeViolation("answers are logged only in INTERVIEW mode")
+        if not (text or "").strip():
+            raise ProvenanceError("an empty answer cannot be attributed to the interviewee")
+        if not (question or "").strip():
+            raise ProvenanceError("log the question this answer responded to")
+        sec = section if section is not None else (self.current_section or "")
+        turn = Turn(len(self.turns), sec, question, text)
+        self.turns.append(turn)
+        raw = self._add_raw_answer(text, turn.index, section=sec)
+        self.save()
+        return raw
+
+    def record_statement(self, text: str, *, topic: str, question: Optional[str] = None, **tags) -> Fact:
+        """Log the interviewee's answer and record it, whole and verbatim, as one fact."""
+        if classify.is_request(text) and tags.get("source") is None:
+            raise ValueError("this is a requested outcome; use record_request()")
+        raw = self.log_answer(text, question=question or "(answer entered directly)", section=topic)
+        return self.record_fact(text, topic=topic, raw_answer_id=raw.id, span=[0, len(text)], **tags)
+
+    def _source_slice(self, statement: str, raw_answer_id: Optional[str],
+                      span: Optional[list[int]]) -> tuple[RawAnswer, list[int]]:
+        """Traceability check: the statement must be an exact slice of a logged answer."""
+        if raw_answer_id is None:
+            raise ProvenanceError("an interview statement must come from the interviewee's logged answer "
+                                  "(raw_answer_id); generated text cannot be attributed to the interviewee")
+        raw = next((r for r in self.raw_answers if r.id == raw_answer_id), None)
+        if raw is None:
+            raise ProvenanceError(f"no logged answer {raw_answer_id}")
+        if span is None:
+            start = raw.text.find(statement) if statement else -1
+            span = [start, start + len(statement)] if start >= 0 else None
+        if not statement.strip() or span is None or raw.text[span[0]:span[1]] != statement:
+            raise ProvenanceError("statement is not a verbatim slice of the interviewee's answer")
+        return raw, list(span)
 
     def _record_free_account(self, text: str, turn_index: int, **tags) -> None:
         section = self.current_section or "general"
@@ -632,13 +677,24 @@ class InterviewSession:
                     event_key: Optional[str] = None, exact_wording_remembered: bool = False,
                     sequence_hint: Optional[str] = None, correction_of: Optional[str] = None,
                     raw_answer_id: Optional[str] = None, span: Optional[list[int]] = None,
-                    question_context: Optional[str] = None) -> Fact:
+                    question_context: Optional[str] = None, _derived_from: Optional[Fact] = None) -> Fact:
+        """Record a fact that is an exact slice of a logged answer.
+
+        `raw_answer_id` (and `span`, or a statement found verbatim in that answer)
+        are required: text with no logged answer behind it -- generated,
+        paraphrased, or typed by someone else -- is refused. `_derived_from` is
+        internal: a second recollection of an existing fact reuses that fact's
+        own words and source slice."""
         if self.mode != Mode.INTERVIEW:
             raise ModeViolation("facts are recorded only in INTERVIEW mode")
-        if raw_answer_id is not None:
-            raw = next((r for r in self.raw_answers if r.id == raw_answer_id), None)
-            if raw is None or span is None or raw.text[span[0]:span[1]] != statement:
-                raise ProvenanceError("statement is not a verbatim slice of the interviewee's answer")
+        if _derived_from is not None:
+            if statement != _derived_from.statement:
+                raise ProvenanceError("a derived recollection must keep the original words")
+            raw_answer_id, span = _derived_from.raw_answer_id, _derived_from.span
+        else:
+            raw, span = self._source_slice(statement, raw_answer_id, span)
+            if turn_index is None:
+                turn_index = raw.turn_index
         certainty, hedges = classify.classify_certainty(statement)
         detected = classify.classify_source(statement)
         if detected == SourceOfKnowledge.REQUEST and source is None:
@@ -664,7 +720,7 @@ class InterviewSession:
             self.set_fact_date(fact.id, date_text)
         else:
             phrase = classify.find_date_phrase(statement)
-            if phrase and raw_answer_id is not None:
+            if phrase and _derived_from is None:
                 self.set_fact_date(fact.id, phrase)
         self.save()
         return fact
@@ -696,8 +752,9 @@ class InterviewSession:
             dup = self.record_fact(fact.statement, topic=fact.topic, source=fact.source,
                                    told_by=fact.told_by, told_by_is_child=fact.told_by_is_child,
                                    witnessed_underlying_event=fact.witnessed_underlying_event,
-                                   event_key=fact.event_key,
-                                   sequence_hint=f"second date recollection for the event in {fact.id}")
+                                   event_key=fact.event_key, turn_index=fact.provenance.turn_index,
+                                   sequence_hint=f"second date recollection for the event in {fact.id}",
+                                   _derived_from=fact)
             dup.date = dv
             self._check_conflicts(dup)
             self.save()
@@ -756,14 +813,18 @@ class InterviewSession:
         self.save()
 
     def record_conflicting_account(self, fact_id: str, statement: str, *,
+                                   raw_answer_id: Optional[str] = None, span: Optional[list[int]] = None,
                                    turn_index: Optional[int] = None) -> Fact:
         """A materially different recollection of the same event. Both are kept;
-        the engine never decides which is more accurate or more favorable."""
+        the engine never decides which is more accurate or more favorable. The
+        alternate account must be the interviewee's own logged words."""
         orig = self.get_fact(fact_id)
+        self._source_slice(statement, raw_answer_id, span)     # refuse before anything changes
         alt = self.record_fact(statement, topic=orig.topic, turn_index=turn_index, event_key=orig.event_key,
                                told_by=orig.told_by, told_by_is_child=orig.told_by_is_child,
                                witnessed_underlying_event=orig.witnessed_underlying_event,
-                               sequence_hint=f"alternate recollection of {orig.id}")
+                               sequence_hint=f"alternate recollection of {orig.id}",
+                               raw_answer_id=raw_answer_id, span=span)
         self._add_discrepancy("account", [orig.id, alt.id], orig.statement, alt.statement, alt)
         self.save()
         return alt
@@ -833,8 +894,9 @@ class InterviewSession:
 
     # ----------------------------------------------------------- corrections
     def _start_correction(self, text: str, via: str, turn_index: int, candidate_ids: list[str]) -> Correction:
+        raw = self._add_raw_answer(text, turn_index)
         corr = Correction(id=f"C-{len(self.corrections) + 1:03d}", raw_text=text, via=via,
-                          provenance=self._provenance(turn_index))
+                          provenance=self._provenance(turn_index), raw_answer_id=raw.id, span=[0, len(text)])
         self.corrections.append(corr)
         corr.candidate_ids = list(candidate_ids)
         target = _explicit_target(text, candidate_ids)
@@ -862,19 +924,23 @@ class InterviewSession:
             self.open_questions = [o for o in self.open_questions if corr.id not in o]
 
     def _apply_correction(self, corr: Correction, target_id: str) -> Fact:
-        new = self.correct_fact(target_id, corr.raw_text, via=corr.via, turn_index=corr.provenance.turn_index,
-                                _correction=corr)
-        return new
+        raw = next(r for r in self.raw_answers if r.id == corr.raw_answer_id)
+        content = raw.text[corr.span[0]:corr.span[1]]
+        return self.correct_fact(target_id, content, via=corr.via, turn_index=corr.provenance.turn_index,
+                                 raw_answer_id=corr.raw_answer_id, span=corr.span, _correction=corr)
 
     def correct_fact(self, fact_id: str, corrected_statement: str, *, via: str = "direct",
+                     raw_answer_id: Optional[str] = None, span: Optional[list[int]] = None,
                      turn_index: Optional[int] = None, date_text: Optional[str] = None,
                      location: Optional[str] = None, people_present: Optional[list[str]] = None,
                      _correction: Optional[Correction] = None) -> Fact:
         """Create a corrected version linked to the original. The original is
-        kept, marked superseded, and never edited or deleted."""
+        kept, marked superseded, and never edited or deleted. The corrected words
+        must be an exact slice of the interviewee's logged answer."""
         orig = self.get_fact(fact_id)
         if orig.status == FactStatus.SUPERSEDED:
             raise ValueError(f"{fact_id} was already corrected by {orig.superseded_by}; correct that version")
+        raw, span = self._source_slice(corrected_statement, raw_answer_id, span)   # refuse before changing
         detected = classify.classify_source(corrected_statement)
         source = orig.source if detected == SourceOfKnowledge.REQUEST else detected
         if date_text is None:
@@ -883,11 +949,13 @@ class InterviewSession:
                                told_by=orig.told_by, told_by_is_child=orig.told_by_is_child,
                                witnessed_underlying_event=orig.witnessed_underlying_event, kind=orig.kind,
                                event_key=orig.event_key, correction_of=orig.id, date_text=date_text,
-                               location=location, people_present=people_present)
+                               location=location, people_present=people_present,
+                               raw_answer_id=raw.id, span=span)
         orig.status = FactStatus.SUPERSEDED
         orig.superseded_by = new.id
-        corr = _correction or Correction(id=f"C-{len(self.corrections) + 1:03d}", raw_text=corrected_statement,
-                                         via=via, provenance=self._provenance(turn_index))
+        corr = _correction or Correction(id=f"C-{len(self.corrections) + 1:03d}",
+                                         raw_text=raw.text, via=via, provenance=self._provenance(new.provenance.turn_index),
+                                         raw_answer_id=raw.id, span=span)
         if _correction is None:
             self.corrections.append(corr)
         corr.target_fact_id, corr.new_fact_id, corr.status = orig.id, new.id, "applied"
@@ -993,8 +1061,14 @@ class InterviewSession:
             cand.status = "confirmed" if decision == "confirm" else "corrected"
             value = cand.value_text if decision == "confirm" else (corrected_value or client_words)
             if cand.fact_id:
+                # The client's reply is logged as their answer to the document check,
+                # so the new version is a traceable slice of their own words.
+                raw = self.log_answer(client_words, question=(
+                    f"Document check: {cand.provenance.label} shows {cand.field} '{cand.value_text}'. "
+                    f"Does that match what you remember?"))
                 new = self.correct_fact(cand.fact_id, client_words, via="document_candidate",
-                                        turn_index=turn_index,
+                                        raw_answer_id=raw.id, span=[0, len(client_words)],
+                                        turn_index=raw.turn_index,
                                         date_text=value if cand.field == "date" else None)
                 cand.resulting_fact_id = new.id
         self.save()
