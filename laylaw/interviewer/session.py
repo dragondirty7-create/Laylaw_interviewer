@@ -374,6 +374,14 @@ class InterviewSession:
         self.last_question_answered = q.text if q else None
         self.pending = None
 
+        if q and q.kind == "preflight" and q.field == "danger" and control != "skip":
+            # Any answer other than a clear "no" -- a plain "yes", "maybe", "not sure" --
+            # pauses ordinary interviewing. The answer is kept as intake.
+            if control == "not_sure" or classify.detect_present_safety_issue(text) or not _is_no_danger(text):
+                self.intake.append(IntakeItem(q.field, q.text, text, self._provenance(turn.index),
+                                              status="not_sure" if control == "not_sure" else "answered"))
+                self._pause_for_safety(q, turn.index)
+                return None
         if classify.detect_present_safety_issue(text) or (
                 q and q.kind == "preflight" and q.field == "urgent"
                 and re.match(r"(?i)\s*yes\b", text) and re.search(r"(?i)danger|hurt|unsafe|threat", text)):
@@ -384,8 +392,10 @@ class InterviewSession:
         if control in ("skip", "not_sure"):
             self._apply_control(control, q, turn.index)
         elif kind == "safety":
-            self.safety_notes.append(f"turn {turn.index}: safety check answered")
-            if not tags.get("keep_paused"):
+            if tags.get("keep_paused") or _NOT_SAFE.match(text):
+                self.safety_notes.append(f"turn {turn.index}: interviewee not yet safe; interview stays paused")
+            else:
+                self.safety_notes.append(f"turn {turn.index}: safety check answered")
                 self.status = SessionStatus.ACTIVE
         elif kind == "preflight":
             self._record_intake(q, text, turn.index)
@@ -410,7 +420,7 @@ class InterviewSession:
         self.status = SessionStatus.PAUSED_FOR_SAFETY
         self.safety_notes.append(f"turn {turn_index}: possible present danger described; "
                                  f"ordinary interviewing paused")
-        if q and not (q.kind == "preflight" and q.field == "urgent"):
+        if q and q.kind != "safety" and not (q.kind == "preflight" and q.field in ("danger", "urgent")):
             self.queue.insert(0, q)  # come back to the same question afterwards
         self.save()
 
@@ -431,6 +441,11 @@ class InterviewSession:
                                           status="skipped" if control == "skip" else "not_sure"))
             if q.field == "confirm_workspace":
                 self._set_workspace_confirmation(False)   # unconfirmed is never treated as confirmed
+            if q.field == "danger":                       # a skipped danger question is never a "no"
+                self.safety_notes.append(f"turn {turn_index}: immediate-danger question {label.lower()}; "
+                                         f"not treated as 'no one is in danger'")
+                self.open_questions.append("Immediate danger not answered: check in about safety before "
+                                           "relying on this session")
             return
         if q.kind in ("free_account", "procedural"):
             self.open_questions.append(f"{label}: {q.text} ({self.current_section})")
@@ -1217,6 +1232,18 @@ _NO = re.compile(r"(?i)\s*(?:no|nope|none|nothing|no,? that'?s (?:it|all|right)|
 
 def _is_nothing_more(text: str) -> bool:
     return not text.strip() or bool(_NOTHING_MORE.fullmatch(text))
+
+
+_NO_DANGER = re.compile(
+    r"(?i)\s*(?:no|nope|nah|not that i know of|nobody|no one|no-one|none|"
+    r"(?:i'?m|i am|we'?re|we are|everyone'?s|everyone is|we'?re all|all) (?:safe|fine|ok(?:ay)?))\b")
+_NOT_SAFE = re.compile(
+    r"(?i)\s*(?:no|nope|not (?:yet|really|safe|right now)|i'?m not|i am not|we'?re not|we are not)\b"
+    r"(?![,.]? (?:problem|worries)\b)")
+
+
+def _is_no_danger(text: str) -> bool:
+    return bool(_NO_DANGER.match(text))
 
 
 def _is_no(text: str) -> bool:

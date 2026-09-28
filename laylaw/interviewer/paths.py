@@ -125,18 +125,20 @@ SECTION_SPECS: dict[str, SectionSpec] = {
 
 PATHS = {
     "family_law": {"sections": FAMILY_LAW_SECTIONS, "default": FAMILY_LAW_DEFAULT, "notice": None,
-                   "preflight": ["confirm_workspace", "urgent", "deadline", "help_first"]},
+                   "preflight": ["confirm_workspace", "danger", "urgent", "deadline", "help_first"]},
     "criminal_defense": {"sections": CRIMINAL_DEFENSE_SECTIONS, "default": CRIMINAL_DEFENSE_DEFAULT,
                          "notice": CRIMINAL_DEFENSE_NOTICE,
-                         "preflight": ["confirm_workspace", "urgent", "deadline", "help_first", "custody",
-                                       "counsel"]},
+                         "preflight": ["confirm_workspace", "danger", "urgent", "deadline", "help_first",
+                                       "custody", "counsel"]},
 }
 
 PREFLIGHT_QUESTIONS = {
     # Build Notes: "Choose the client and case type; confirm whose workspace is open."
     "confirm_workspace": "Just to confirm before we begin: this interview is for {interviewee} (case {case_id}). "
                          "Is that right?",
-    "urgent": "Before we start: is anyone in immediate danger right now, or is there another urgent concern?",
+    # Immediate danger is asked on its own, so a plain "yes" can only mean danger.
+    "danger": "Is anyone in immediate danger right now?",
+    "urgent": "Is there another urgent concern we should know about before we start?",
     "deadline": "Is there a court hearing or other deadline coming up? If so, when?",
     "help_first": "What do you need help with first?",
     "custody": "Are you currently in custody, or out of custody?",

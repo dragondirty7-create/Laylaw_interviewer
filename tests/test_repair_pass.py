@@ -163,6 +163,7 @@ def test_criminal_path_starts_with_paperwork_and_never_requires_conduct_narrativ
     answers = {
         "this interview is for Jordan Avery": "Yes, that's right",
         "is anyone in immediate danger": "No",
+        "another urgent concern": "No",
         "hearing or other deadline": "An arraignment around October 15, 2026",
         "help with first": "Understanding my paperwork",
         "in custody, or out": "Out of custody",
@@ -183,13 +184,13 @@ def test_criminal_path_starts_with_paperwork_and_never_requires_conduct_narrativ
 
     # Intake first, then paperwork -- the charges question is the first interview question.
     first_section_q = next(i for i, q in enumerate(asked) if "charges are listed" in q)
-    assert first_section_q == 6                                     # after the 6 preflight questions
+    assert first_section_q == 7                                     # after the 7 preflight questions
     assert asked[0].startswith("Just to confirm before we begin: this interview is for Jordan Avery")
     joined = "\n".join(asked).lower()
     assert "events in question" not in joined and "what happened" not in joined.split("procedural history")[0]
     # Intake answers are administrative metadata, not historical facts.
-    assert {i.key for i in s.intake} == {"confirm_workspace", "urgent", "deadline", "help_first", "custody",
-                                         "counsel"}
+    assert {i.key for i in s.intake} == {"confirm_workspace", "danger", "urgent", "deadline", "help_first",
+                                         "custody", "counsel"}
     assert all(f.statement != "Out of custody" for f in s.facts)
     charge = next(f for f in s.facts if "misdemeanor" in f.statement)
     assert charge.source == SourceOfKnowledge.DOCUMENT_RECOLLECTION
@@ -210,16 +211,18 @@ def test_preflight_captures_intake_separately_and_pauses_for_present_danger(ws):
     assert s.next_question().startswith("Just to confirm before we begin: this interview is for Jordan Avery")
     s.answer("Yes")
     q = s.next_question()
-    assert q.startswith("Before we start: is anyone in immediate danger")
+    assert q == "Is anyone in immediate danger right now?"          # asked on its own
     s.answer("Yes, he is outside right now and threatening to hurt me.")
     assert s.status == SessionStatus.PAUSED_FOR_SAFETY
     assert "911" in s.next_question()
     s.answer("I'm safe now.")
+    assert "another urgent concern" in s.next_question()           # danger is not re-asked
+    s.answer("No")
     assert s.next_question().startswith("Is there a court hearing or other deadline")
     s.answer("A hearing sometime in November 2026")
     s.next_question()
     s.answer("Setting up a schedule")
-    assert [i.key for i in s.intake] == ["confirm_workspace", "deadline", "help_first"]
+    assert [i.key for i in s.intake] == ["confirm_workspace", "danger", "urgent", "deadline", "help_first"]
     assert s.facts == []                                    # intake is not historical fact
     assert "custody" not in [i.key for i in s.intake]       # criminal-only questions not asked here
 
@@ -433,7 +436,7 @@ def test_wrong_workspace_stops_the_interview_until_an_operator_confirms(ws):
     again = ws.load_session(s.interview_id)                   # survives reload
     assert again.next_question() is None
     again.confirm_workspace()
-    assert again.next_question().startswith("Before we start: is anyone in immediate danger")
+    assert again.next_question() == "Is anyone in immediate danger right now?"
     # "Not sure" / skip is never treated as confirmation.
     t, _ = paths.start_path("family_law", ws, case_id="CASE-FICTIONAL-WS2", interviewee="Jordan Avery",
                             interviewer="L", purpose="x", interviewee_is_adult=True)
