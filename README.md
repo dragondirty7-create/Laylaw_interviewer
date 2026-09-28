@@ -32,6 +32,9 @@ tests/
   test_repair_pass.py  corrections, controls, criminal path, preflight, propositions,
                        discrepancies, source typing, sections, candidates, ORGANIZE, research
   test_extra.py        criminal-path engine parity, safety pause
+  test_audit_repairs.py  regressions for the fdd7d449 audit: provenance, unknown basis,
+                       acknowledgements vs corrections, discrepancy binding, attributed
+                       wording, immediate-danger preflight, conflict labels
 .github/workflows/tests.yml  CI: full pytest suite on every push and PR
 ```
 
@@ -45,7 +48,18 @@ facts. Save-and-finish-later keeps the exact pending question as the resume poin
 
 Recap and final-check corrections never edit the original. The engine creates
 a new fact version in the interviewee's words, linked by `correction_of` and
-`superseded_by`, and every output shows both versions.
+`superseded_by`, and every output shows both versions. A bare "yes" is an
+acknowledgement, not a correction: the engine asks what should change first.
+"Is there anything important I missed?" records additions and replaces nothing.
+
+## Provenance
+
+Every fact, correction, and alternate account is an exact slice of the
+interviewee's logged answer. Outside the question flow, `log_answer(text,
+question=...)` (or `record_statement(...)`) is the only way to enter their
+words; generated or paraphrased text raises `ProvenanceError`. A claim with no
+stated basis ("They were using drugs.") is recorded as UNKNOWN and followed by
+"How do you know that?".
 
 ## Security status
 

@@ -23,6 +23,10 @@ using it with anything other than synthetic test data.
 - **Keyword classifiers are backstops.** Present-danger detection and the
   advocacy guard are keyword lists. They can miss things and must not replace
   human judgment.
+- **Attribution is caller-declared.** The engine refuses text that is not an
+  exact slice of a logged answer, but it cannot verify *who* entered that
+  answer through `log_answer` / `record_statement`. That depends on the
+  authentication prerequisite below.
 
 ## Before real client data
 1. Put storage behind authenticated, per-user authorization.

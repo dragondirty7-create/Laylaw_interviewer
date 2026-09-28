@@ -1,4 +1,68 @@
-# Handoff — Laylaw Interviewer, PR #1 repair pass
+# Handoff — Laylaw Interviewer, PR #1 audit repair pass
+
+**Date:** 2026-09-28 (America/Los_Angeles)
+**From:** Claude → Soul / Michael
+**Input:** Soul audit follow-up, HOLD at `fdd7d449` (https://github.com/dragondirty7-create/Laylaw_interviewer/pull/1#issuecomment-5874385241; Drive mirror *Claude Code Handoff — Laylaw Interviewer*).
+**Scope:** the seven audit items only. Architecture, section defaults, and the resolved criminal-path / Build Notes comparison are unchanged. No LLM layer, no new features. Synthetic data only. **Not merged, not deployed.**
+
+## Branch and commits
+- **Branch:** `feat/interviewer-core` → `main`. PR #1 head was `fdd7d449` (= audit baseline) when this pass started; no newer work existed to preserve.
+- **Repair commits** (in order):
+
+| Commit | What |
+|---|---|
+| `b64b626` | Regression tests for the seven findings (fail at `fdd7d449`) |
+| `52de607` | 1. Traceable source text for facts, corrections, alternate accounts |
+| `63ec0d1` | 2. Unknown basis of knowledge stays UNKNOWN |
+| `1103ad1` | 3. Acknowledgements, additions, corrections separated |
+| `352ec58` | 4. Clarifications bound to exact discrepancy id (incl. save/resume) |
+| `00aca9c` | 5. Attributed wording preserved; guard kept for generated advocacy |
+| `127a465` | 6. Immediate danger asked separately; plain "Yes" pauses |
+| `ae5d5b5` | 7. Conflicts labeled by actual field |
+| `a064d5d` | Follow-up edge cases found in self-review (each with a test) |
+
+- **Code head:** `a064d5d`. Later commits change only documentation (`HANDOFF.md`, `README.md`, `SECURITY.md`). The final head SHA and its CI runs are recorded in the PR description.
+
+## Files changed since `fdd7d449`
+- **Engine:** `laylaw/interviewer/session.py`, `classify.py`, `guard.py`, `outputs.py`, `paths.py`, `models.py`
+- **New tests:** `tests/test_audit_repairs.py` (31 test functions, 56 cases)
+- **Updated tests:** `tests/test_required.py` — call-site change only: 13 fact-seeding calls moved from `record_fact(text, topic=…)` (now refused without a logged answer) to `record_statement(…)`; no assertion changed. `tests/test_repair_pass.py` — preflight tests updated for the split danger question and its position; one alternate-account call now logs the interviewee's words first; seeding calls as above.
+- **Docs:** `HANDOFF.md`, `README.md`, `SECURITY.md` (one limitation added; real-client restriction unchanged)
+
+## Test results
+- `python -m pytest -q`: **96 passed** locally on Python 3.10, 3.11 and 3.12 (was 40). Breakdown: `test_required.py` 18, `test_repair_pass.py` 19, `test_extra.py` 3, `test_audit_repairs.py` 56.
+- **Regression tests catch the original failures:** the final `tests/test_audit_repairs.py` run against the unmodified `fdd7d449` source gives **40 failed, 12 passed**. Failures per item: 1 → 4, 2 → 3, 3 → 12, 4 → 5, 5 → 2, 6 → 10, 7 → 4. The 12 that pass there are deliberate controls for behavior that must not change (explicit firsthand / secondhand / inference / document typing; bare "No" changes nothing; genuine date conflicts keep the date label).
+- The audit's literal reproductions were replayed on the repaired head: generated `record_fact` → `ProvenanceError`; "They were using drugs." → `unknown`; recap "Yes" → fact unchanged, next question "What should I change?"; "Taylor was there." → PEOPLE PRESENT clarified, LOCATION still unresolved; "He was abusive." → all seven outputs render with the wording kept; danger "Yes" → `paused_for_safety`; Library-vs-Park → LOCATION label only.
+- CI naming check (legacy name) clean.
+
+## Status of each audit item
+
+| # | Item | Status | What changed |
+|---|---|---|---|
+| 1 | Traceable source text (audit 4) | **Repaired** | `record_fact`, `correct_fact`, `record_conflicting_account` require an exact slice of a logged answer (`raw_answer_id` + `span`, or a statement found verbatim); otherwise `ProvenanceError` before anything changes. `log_answer(text, question=…)` is the one declared entry for the interviewee's words outside the question flow (kept as a turn with its question); `record_statement` wraps it. Recap/final corrections and document-candidate replies are logged and linked on the `Correction`. Paraphrases are refused on every path. |
+| 2 | Unknown basis (audit 5) | **Repaired** | `classify_source` returns firsthand only when the words establish it (own perception, or own act); otherwise UNKNOWN. "How do you know that?" is queued for UNKNOWN and its answer sets the basis (or leaves it UNKNOWN). UNKNOWN survives all outputs and save/load. |
+| 3 | Ack / addition / correction (audit 1) | **Repaired** | Each check question has a role. A bare acknowledgement never becomes content: it asks one follow-up ("What should I change?", "Which part did I make sound more certain than you meant?", "What did I miss?"); the numbered-item question comes only after substantive words exist. "Anything I missed?" records additions and replaces nothing. A leading "Yes," is sliced off; the full answer stays on the Correction. |
+| 4 | Discrepancy binding (audit 2) | **Repaired** | `PendingQuestion.ref` holds the discrepancy id and is saved/loaded. Answers, skips and "not sure" act on that discrepancy only. Pre-repair saves fall back only when exactly one discrepancy is open for the fact; with several, nothing is resolved and the answer is kept as a note. |
+| 5 | Attributed wording vs guard (audit 3) | **Repaired** | The guard takes `attributed` wording (`InterviewSession.attributed_texts()`: answers, statements, fact fields, corrections, intake, requests, document findings/candidates, interviewee-mentioned records). Only attributed strings that would themselves trip a pattern are set aside, verbatim. All renderers and `_emit` use it; Fact Table/Timeline are checked value by value. Engine-authored advocacy still raises. |
+| 6 | Immediate danger (audit 6) | **Repaired** | Preflight asks "Is anyone in immediate danger right now?" alone, then "Is there another urgent concern we should know about before we start?". Anything but a clear no ("Yes", "Maybe", "not sure") pauses for safety and is kept as intake; the danger question isn't re-asked after the safety check. Skip is recorded and flagged, never read as "no". "No"/"not yet" to the safety check keeps the pause; "No, I'm safe now" resumes. Non-danger urgency stays administrative intake. |
+| 7 | Conflict labels (audit 7) | **Repaired** | `outputs.discrepancy_label()` names the actual field (DATE, LOCATION, PEOPLE PRESENT, SEQUENCE, ACCOUNT) in the Fact Table, Timeline, Open Questions and Interview Record. |
+
+## Remaining limitations
+- **Real-client use remains blocked.** No authentication, authorization, or encryption at rest (see `SECURITY.md`). This pass does not change that boundary; this is a synthetic-data prototype.
+- **Attribution is caller-declared.** `log_answer` / `record_statement` accept the words the caller says the interviewee gave, with the question asked. The engine refuses untraceable and paraphrased text, but it cannot authenticate who typed an answer; that belongs with the authentication prerequisite.
+- **Classifiers remain English keyword matching** (sources, acknowledgements, danger/safety, advocacy). They lean cautious — any non-"no" to the danger question pauses — but can misread unusual phrasing. The advocacy guard remains a backstop, not a substitute for review.
+- **Firsthand detection is conservative:** some firsthand accounts without a perception/action cue ("The car was blue.") are UNKNOWN until the interviewee answers "How do you know that?". That is intended.
+- **Question volume** is unchanged (the LLM layer and question prioritization stay deferred per the audit).
+- Prior items still stand: no semantic contradiction detection between free-text answers; correction content is the interviewee's correction sentence, not a merged restatement; next-hearing dates appear in the Timeline.
+
+## Next recommended step
+1. Soul reviews PR #1 at the final head recorded in the PR description, with its passing CI runs.
+2. If accepted, merge as a clearly documented synthetic-data library. Real-client use waits for the `SECURITY.md` prerequisites.
+3. Then decide on the deferred items: the LLM conversation layer (engine stays the only writer of the record) and question prioritization.
+
+---
+
+# Previous pass (for history) — PR #1 repair pass before the audit
 
 **Date:** 2026-09-28 (America/Los_Angeles)
 **From:** Claude (Claude Code) → Soul / Michael
