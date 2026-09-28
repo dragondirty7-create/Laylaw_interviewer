@@ -392,7 +392,7 @@ class InterviewSession:
         if control in ("skip", "not_sure"):
             self._apply_control(control, q, turn.index)
         elif kind == "safety":
-            if tags.get("keep_paused") or _NOT_SAFE.match(text):
+            if tags.get("keep_paused") or _not_safe(text):
                 self.safety_notes.append(f"turn {turn.index}: interviewee not yet safe; interview stays paused")
             else:
                 self.safety_notes.append(f"turn {turn.index}: safety check answered")
@@ -967,11 +967,11 @@ class InterviewSession:
             self._start_correction(text, "recap" if stage == "recap" else "final_check", turn_index,
                                    candidates, content_start=start)
         elif role == "addition":
-            self._record_addition(text, start, turn_index)
+            self._record_addition(text, start, turn_index, question)
         else:
             self.open_questions.append(f"Final check - {question} -> {text}")
 
-    def _record_addition(self, text: str, start: int, turn_index: int) -> None:
+    def _record_addition(self, text: str, start: int, turn_index: int, question: str = "") -> None:
         """Something the interviewee says was missed: recorded as new items in
         their own words. Nothing already on the record is replaced."""
         section = self.current_section or "general"
@@ -991,6 +991,10 @@ class InterviewSession:
         if spec.default_source:
             tags["source"] = spec.default_source
         spans = [(start + a, start + b) for a, b in classify.proposition_spans(content)] or [(start, end)]
+        if spec.kind == "procedural":
+            # Paperwork/court items: kept with the question they answered; no incident follow-ups.
+            self._record_propositions(raw, spans=spans, spec_question=question, **tags)
+            return
         for f in self._record_propositions(raw, spans=spans, **tags):
             self._queue_clarifications(f)
 
@@ -1028,6 +1032,14 @@ class InterviewSession:
             self.open_questions = [o for o in self.open_questions if corr.id not in o]
 
     def _apply_correction(self, corr: Correction, target_id: str) -> Fact:
+        if corr.raw_answer_id is None:
+            # Saved before corrections were linked to a logged answer: the words were the
+            # interviewee's answer at that turn, so link them to that turn -- nothing else.
+            turn = next((t for t in self.turns if t.index == corr.provenance.turn_index), None)
+            if turn is None or turn.answer != corr.raw_text:
+                raise ProvenanceError(f"{corr.id} cannot be traced to the interviewee's answer")
+            corr.raw_answer_id = self._add_raw_answer(turn.answer, turn.index, turn.section).id
+            corr.span = [0, len(turn.answer.rstrip())]
         raw = next(r for r in self.raw_answers if r.id == corr.raw_answer_id)
         content = raw.text[corr.span[0]:corr.span[1]]
         return self.correct_fact(target_id, content, via=corr.via, turn_index=corr.provenance.turn_index,
@@ -1226,8 +1238,9 @@ class InterviewSession:
 _NOTHING_MORE = re.compile(
     r"(?i)\s*(?:no|nope|none|nothing(?: else)?(?: happened)?|that'?s (?:it|all)|not really|"
     r"i don'?t (?:know|remember)|n/?a)[.!]?\s*")
-_NO = re.compile(r"(?i)\s*(?:no|nope|none|nothing|no,? that'?s (?:it|all|right)|looks (?:right|good)|"
-                 r"that'?s (?:right|correct|it|all)|correct|all good|nothing else)[.!]?\s*")
+_NO_WORD = (r"(?:no|nope|nah|none|nothing|looks (?:right|good|fine)|that'?s (?:right|correct|it|all)|correct|"
+            r"all good|nothing else|i think (?:that'?s|it'?s) (?:it|all|right))")
+_NO = re.compile(rf"(?i)\s*{_NO_WORD}(?:[\s,.!;:-]+{_NO_WORD})*[.!]?\s*")
 
 
 def _is_nothing_more(text: str) -> bool:
@@ -1240,6 +1253,15 @@ _NO_DANGER = re.compile(
 _NOT_SAFE = re.compile(
     r"(?i)\s*(?:no|nope|not (?:yet|really|safe|right now)|i'?m not|i am not|we'?re not|we are not)\b"
     r"(?![,.]? (?:problem|worries)\b)")
+
+
+_SAYS_SAFE = re.compile(r"(?i)\b(?:i'?m|i am|we'?re|we are|everyone'?s|everyone is|all) (?:now |all )?"
+                        r"(?:safe|fine|ok(?:ay)?|good)\b")
+
+
+def _not_safe(text: str) -> bool:
+    """'No' / 'not yet' to "are you safe right now?" -- unless they also say they are safe."""
+    return bool(_NOT_SAFE.match(text)) and not _SAYS_SAFE.search(text)
 
 
 def _is_no_danger(text: str) -> bool:
@@ -1255,7 +1277,7 @@ _ACK_WORD = (r"(?:yes|yeah|yep|yup|ya|sure|ok(?:ay)?|right|mm-?hm+|uh-?huh|i thi
              r"a little|maybe|probably|actually|there is|there'?s (?:one|something)(?: thing)?|one thing|"
              r"something|i do|a couple(?: of)? things|a few things)")
 _ACK = re.compile(rf"(?i)\s*{_ACK_WORD}(?:[\s,.!;:-]+{_ACK_WORD})*[\s.!,]*")
-_LEAD_ACK = re.compile(r"(?i)\s*(?:yes|yeah|yep|yup|actually|well)\b[\s,.:;!\-–—]*")
+_LEAD_ACK = re.compile(r"(?i)\s*(?:yes|yeah|yep|yup|actually)\b[\s,.:;!\-–—]*")
 
 # What each check question is asking for.
 _CHECK_ROLES = {("recap", "0"): "correction", ("recap", "1"): "certainty", ("recap", "2"): "addition",

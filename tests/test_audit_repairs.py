@@ -196,7 +196,7 @@ def test_3_yes_with_content_uses_only_the_content(session):
     assert session.corrections[-1].raw_text == "Yes, it was a green car."    # full words kept
 
 
-@pytest.mark.parametrize("neg", ["No", "No, that's right.", "Looks good"])
+@pytest.mark.parametrize("neg", ["No", "No, that's right.", "Looks good", "Nope, all good."])
 def test_3_bare_no_at_recap_changes_nothing(session, neg):
     session.next_question()
     session.answer("I saw a blue car.")
@@ -253,6 +253,44 @@ def test_3_bare_yes_at_final_check_never_replaces_a_fact(ws, question, follow):
         s.answer("Yes")
         assert [(f.statement, f.status) for f in s.facts] == before and s.corrections == []
         assert s.next_question() == follow
+
+
+def test_3_leading_well_is_not_stripped_as_an_acknowledgement(session):
+    session.next_question()
+    session.answer("I saw a blue car.")
+    advance_to(session, ends(RECAP_WRONG))
+    session.answer("Well water was on the floor, not rain.")
+    assert session.facts[-1].statement == "Well water was on the floor, not rain."
+
+
+def test_3_addition_in_procedural_section_gets_no_incident_follow_ups(ws):
+    s, _ = paths.start_path("criminal_defense", ws, case_id="CASE-FICTIONAL-CD3", interviewee="Jordan Avery",
+                            interviewer="Laylaw Interviewer", purpose="Synthetic", interviewee_is_adult=True,
+                            sections=["Charges as shown on paperwork"], preflight=False)
+    s.next_question()
+    s.answer("It says misdemeanor vandalism, fictional code 000.0")
+    advance_to(s, ends(RECAP_MISSED))
+    s.answer("There is also a fictional traffic citation listed.")
+    added = s.facts[-1]
+    assert added.statement == "There is also a fictional traffic citation listed."
+    assert added.question_context == RECAP_MISSED and added.correction_of is None
+    assert not any(q.fact_id == added.id and q.kind == "clarify" for q in s.queue)
+
+
+def test_3_correction_saved_before_linking_is_traced_to_its_turn_on_resume(session):
+    from laylaw.interviewer import InterviewSession
+    session.next_question()
+    session.answer("I saw a blue car. Sam Rowe was driving it.")
+    advance_to(session, ends(RECAP_WRONG))
+    session.answer("The car was green.")
+    assert session.next_question().endswith("Which numbered item does that change?")
+    d = session.to_dict()                                    # simulate a pre-repair save
+    d["corrections"][0].update(raw_answer_id=None, span=None)
+    old = InterviewSession.from_dict(d)
+    old.answer("1")
+    new = old.facts[-1]
+    assert new.statement == "The car was green." and new.correction_of == old.facts[0].id
+    assert_every_fact_traceable(old)
 
 
 def test_3_bare_no_at_final_check_changes_nothing(session):
@@ -440,7 +478,7 @@ def test_6_pause_survives_reload_and_resumes_after_safety_check(ws, store):
     again.answer("No")                                       # not safe yet -> stays paused
     assert again.status == SessionStatus.PAUSED_FOR_SAFETY
     assert again.next_question() == SAFETY_QUESTION
-    again.answer("I'm safe now.")
+    again.answer("No, I'm safe now.")                        # says safe -> resumes
     assert again.status == SessionStatus.ACTIVE
     q = again.next_question()
     assert "urgent concern" in q                             # danger is not re-asked
