@@ -42,8 +42,6 @@ FINAL_CHECK_QUESTIONS = [
     "Did I make anything sound more definite than you remember it?",
     "What should we follow up on next?",
 ]
-# Final-check questions whose non-empty answers are corrections to the record.
-_FINAL_CORRECTION_INDEXES = {1, 2}
 RECORD_HOOK_QUESTION = "Is there anything that might help document or date this?"
 SAFETY_QUESTION = (
     "Before we go on: are you safe right now? If you or anyone else is in immediate danger, "
@@ -79,7 +77,7 @@ class ProvenanceError(ValueError):
 @dataclass
 class PendingQuestion:
     # preflight | free_account | clarify | procedural | record_hook | recap | final |
-    # correction_target | safety
+    # check_followup | correction_target | safety
     kind: str
     text: str
     fact_id: Optional[str] = None
@@ -378,19 +376,12 @@ class InterviewSession:
             self._apply_clarification(q, text, turn.index, **tags)
         elif kind == "record_hook":
             self._apply_record_hook(q, text, source_type=tags.get("source_type"))
-        elif kind == "recap":
-            if not _is_no(text):
-                self._start_correction(text, "recap", turn.index,
-                                       [f.id for f in self._current_facts(self.current_section)])
+        elif kind in ("recap", "final"):
+            self._handle_check_answer(q, text, turn.index)
+        elif kind == "check_followup":
+            self._handle_check_followup(q, text, turn.index)
         elif kind == "correction_target":
             self._resolve_correction_target(q, text)
-        elif kind == "final":
-            if not _is_no(text):
-                if int(q.field or 0) in _FINAL_CORRECTION_INDEXES:
-                    self._start_correction(text, "final_check", turn.index,
-                                           [f.id for f in self._current_facts()])
-                else:
-                    self.open_questions.append(f"Final check - {q.text} -> {text}")
         self.save()
         return None
 
@@ -437,7 +428,7 @@ class InterviewSession:
         if q.kind == "correction_target":
             self.open_questions.append(f"Correction {q.field} not yet matched to an item ({label.lower()})")
             return
-        if q.kind in ("recap", "final", "record_hook"):
+        if q.kind in ("recap", "final", "record_hook", "check_followup"):
             self.open_questions.append(f"{label}: {q.text}")
 
     # ----------------------------------------------------------- intake
@@ -892,11 +883,77 @@ class InterviewSession:
     def _current_facts(self, section: Optional[str] = None) -> list[Fact]:
         return [f for f in self.facts if f.status == FactStatus.CURRENT and (section is None or f.topic == section)]
 
-    # ----------------------------------------------------------- corrections
-    def _start_correction(self, text: str, via: str, turn_index: int, candidate_ids: list[str]) -> Correction:
+    # ----------------------------------------------------------- end-of-section / final checks
+    def _handle_check_answer(self, q: PendingQuestion, text: str, turn_index: int) -> None:
+        """Separate acknowledgements, additions, and corrections.
+
+        A bare "yes" is an acknowledgement, never content: it asks what should
+        change (or what was missed) instead of replacing anything. Only the
+        interviewee's substantive words become a correction or an addition."""
+        stage = q.kind
+        role = _CHECK_ROLES.get((stage, q.field or "0"), "follow_up")
+        if _is_no(text):
+            return
+        if _is_bare_ack(text):
+            if role in _CHECK_FOLLOWUPS:
+                self.queue.insert(0, PendingQuestion("check_followup", _CHECK_FOLLOWUPS[role],
+                                                     field=f"{stage}:{role}"))
+            else:
+                self.open_questions.append(f"Final check - {q.text} -> {text}")
+            return
+        self._route_check_content(stage, role, q.text, text, turn_index)
+
+    def _handle_check_followup(self, q: PendingQuestion, text: str, turn_index: int) -> None:
+        stage, role = (q.field or "recap:correction").split(":", 1)
+        if _is_no(text):
+            return
+        if _is_bare_ack(text):
+            self.open_questions.append(f"Interviewee indicated a change at the {stage} check but did not say "
+                                       f"what it was (answer to \"{q.text}\": \"{text}\")")
+            return
+        self._route_check_content(stage, role, q.text, text, turn_index)
+
+    def _route_check_content(self, stage: str, role: str, question: str, text: str, turn_index: int) -> None:
+        start = _content_start(text)
+        if role in ("correction", "certainty"):
+            candidates = [f.id for f in self._current_facts(self.current_section if stage == "recap" else None)]
+            self._start_correction(text, "recap" if stage == "recap" else "final_check", turn_index,
+                                   candidates, content_start=start)
+        elif role == "addition":
+            self._record_addition(text, start, turn_index)
+        else:
+            self.open_questions.append(f"Final check - {question} -> {text}")
+
+    def _record_addition(self, text: str, start: int, turn_index: int) -> None:
+        """Something the interviewee says was missed: recorded as new items in
+        their own words. Nothing already on the record is replaced."""
+        section = self.current_section or "general"
+        spec = spec_for(section)
+        end = len(text.rstrip())
         raw = self._add_raw_answer(text, turn_index)
+        content = text[start:end]
+        if spec.kind == "request" or self.is_request_section(section):
+            self.record_request(content, turn_index=turn_index)
+            return
+        if spec.kind == "records":
+            self._apply_record_hook(PendingQuestion("record_hook", "", None), content)
+            return
+        tags: dict = {}
+        if spec.kind == "routine" or re.search(r"(?i)routine", section):
+            tags["kind"] = EventKind.ROUTINE
+        if spec.default_source:
+            tags["source"] = spec.default_source
+        spans = [(start + a, start + b) for a, b in classify.proposition_spans(content)] or [(start, end)]
+        for f in self._record_propositions(raw, spans=spans, **tags):
+            self._queue_clarifications(f)
+
+    # ----------------------------------------------------------- corrections
+    def _start_correction(self, text: str, via: str, turn_index: int, candidate_ids: list[str],
+                          content_start: int = 0) -> Correction:
+        raw = self._add_raw_answer(text, turn_index)
+        span = [content_start, len(text.rstrip())]
         corr = Correction(id=f"C-{len(self.corrections) + 1:03d}", raw_text=text, via=via,
-                          provenance=self._provenance(turn_index), raw_answer_id=raw.id, span=[0, len(text)])
+                          provenance=self._provenance(turn_index), raw_answer_id=raw.id, span=span)
         self.corrections.append(corr)
         corr.candidate_ids = list(candidate_ids)
         target = _explicit_target(text, candidate_ids)
@@ -1132,6 +1189,38 @@ def _is_nothing_more(text: str) -> bool:
 
 def _is_no(text: str) -> bool:
     return not text.strip() or bool(_NO.fullmatch(text))
+
+
+# Acknowledgements carry no content of their own ("yes", "yeah, actually").
+_ACK_WORD = (r"(?:yes|yeah|yep|yup|ya|sure|ok(?:ay)?|right|mm-?hm+|uh-?huh|i think so|kind of|sort of|"
+             r"a little|maybe|probably|actually|there is|there'?s (?:one|something)(?: thing)?|one thing|"
+             r"something|i do|a couple(?: of)? things|a few things)")
+_ACK = re.compile(rf"(?i)\s*{_ACK_WORD}(?:[\s,.!;:-]+{_ACK_WORD})*[\s.!,]*")
+_LEAD_ACK = re.compile(r"(?i)\s*(?:yes|yeah|yep|yup|actually|well)\b[\s,.:;!\-–—]*")
+
+# What each check question is asking for.
+_CHECK_ROLES = {("recap", "0"): "correction", ("recap", "1"): "certainty", ("recap", "2"): "addition",
+                ("final", "0"): "not_asked", ("final", "1"): "correction", ("final", "2"): "certainty",
+                ("final", "3"): "follow_up"}
+_CHECK_FOLLOWUPS = {"correction": "What should I change?",
+                    "certainty": "Which part did I make sound more certain than you meant?",
+                    "addition": "What did I miss?",
+                    "not_asked": "What should I have asked about?"}
+
+
+def _is_bare_ack(text: str) -> bool:
+    return bool(text.strip()) and bool(_ACK.fullmatch(text))
+
+
+def _content_start(text: str) -> int:
+    """Index where the substantive words begin, after leading acknowledgements
+    ("Yes, it was green." -> "it was green."). The full answer is still kept."""
+    pos = 0
+    while True:
+        m = _LEAD_ACK.match(text, pos)
+        if not m or m.end() == pos or not text[m.end():].strip():
+            return pos if text[pos:].strip() else 0
+        pos = m.end()
 
 
 def _explicit_target(text: str, candidate_ids: list[str], allow_bare_number: bool = False) -> Optional[str]:
