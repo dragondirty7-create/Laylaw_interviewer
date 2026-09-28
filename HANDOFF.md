@@ -5,9 +5,10 @@
 **Source of truth:** *Laylaw Interviewer — Canonical Specification* + *Claude Code Handoff — Laylaw Interviewer* (Drive)
 
 ## Repo and branch
-- **Path:** `/home/claude/laylaw` (a local git repo in Claude's cloud workspace)
-- **Branch:** `feat/interviewer-core` (off an empty `main`)
-- **Remote / PR:** none yet. No existing Laylaw repo was found locally, so Michael directed a fresh start. It needs pushing to a GitHub repo for a PR to exist.
+- **Repo:** https://github.com/dragondirty7-create/Laylaw_interviewer
+- **Branch:** `feat/interviewer-core`, based on `main` (a one-commit initial README, since the repo was empty)
+- **PR:** https://github.com/dragondirty7-create/Laylaw_interviewer/pull/1
+- No earlier Laylaw implementation was found, so Michael directed a fresh start.
 
 ## Files
 - `laylaw/interviewer/models.py`, `classify.py`, `session.py`, `guard.py`, `outputs.py`, `workspace.py`, `paths.py`, `__init__.py`
