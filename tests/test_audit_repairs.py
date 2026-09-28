@@ -459,12 +459,30 @@ def test_6_no_danger_then_ordinary_urgency_does_not_pause(ws):
     assert s.facts == []                                     # administrative intake only
 
 
-def test_6_skipping_the_danger_question_is_recorded_not_treated_as_safe(ws):
+@pytest.mark.parametrize("how", ["api", "typed"])
+def test_6_skipping_the_danger_question_pauses_and_is_not_treated_as_safe(ws, store, how):
     s = _family(ws)
-    s.next_question()
-    s.skip()
-    assert s.intake[-1].key == "danger" and s.intake[-1].status == "skipped"
-    assert any("danger" in n for n in s.safety_notes)
+    assert s.next_question() == DANGER_Q
+    if how == "api":
+        s.skip()
+    else:
+        s.answer("skip")                                     # the whole answer is the control word
+    item = s.intake[-1]
+    assert item.key == "danger" and item.status == "skipped" and item.answer == ""   # never a "no"
+    assert s.turns[-1].control == "skip"
+    assert any("danger" in n and "skipped" in n for n in s.safety_notes)
+    assert s.status == SessionStatus.PAUSED_FOR_SAFETY       # the actual pause, not only the flag
+    assert s.next_question() == SAFETY_QUESTION              # safety check comes next
+    assert s.facts == []
+    # The pause survives save/reload and resume.
+    again = store.workspace(ws.client_id).load_session(s.interview_id)
+    again.resume()
+    assert again.status == SessionStatus.PAUSED_FOR_SAFETY
+    assert again.next_question() == SAFETY_QUESTION
+    again.answer("I'm safe now.")
+    assert again.status == SessionStatus.ACTIVE
+    q = again.next_question()
+    assert "urgent concern" in q and q != DANGER_Q           # ordinary preflight resumes
 
 
 def test_6_pause_survives_reload_and_resumes_after_safety_check(ws, store):

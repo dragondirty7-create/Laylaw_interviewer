@@ -374,12 +374,20 @@ class InterviewSession:
         self.last_question_answered = q.text if q else None
         self.pending = None
 
-        if q and q.kind == "preflight" and q.field == "danger" and control != "skip":
-            # Any answer other than a clear "no" -- a plain "yes", "maybe", "not sure" --
-            # pauses ordinary interviewing. The answer is kept as intake.
-            if control == "not_sure" or classify.detect_present_safety_issue(text) or not _is_no_danger(text):
-                self.intake.append(IntakeItem(q.field, q.text, text, self._provenance(turn.index),
-                                              status="not_sure" if control == "not_sure" else "answered"))
+        if q and q.kind == "preflight" and q.field == "danger":
+            # Any answer other than a clear "no" -- a plain "yes", "maybe", "not sure", or a
+            # skip -- pauses ordinary interviewing. The answer is kept as intake; a skip is
+            # recorded as skipped and never read as "no one is in danger".
+            if control in ("skip", "not_sure") or classify.detect_present_safety_issue(text) \
+                    or not _is_no_danger(text):
+                status = {"skip": "skipped", "not_sure": "not_sure"}.get(control, "answered")
+                self.intake.append(IntakeItem(q.field, q.text, "" if control == "skip" else text,
+                                              self._provenance(turn.index), status=status))
+                if control == "skip":
+                    self.safety_notes.append(f"turn {turn.index}: immediate-danger question skipped; "
+                                             f"not treated as 'no one is in danger'")
+                    self.open_questions.append("Immediate danger not answered: check in about safety before "
+                                               "relying on this session")
                 self._pause_for_safety(q, turn.index)
                 return None
         if classify.detect_present_safety_issue(text) or (
@@ -441,11 +449,6 @@ class InterviewSession:
                                           status="skipped" if control == "skip" else "not_sure"))
             if q.field == "confirm_workspace":
                 self._set_workspace_confirmation(False)   # unconfirmed is never treated as confirmed
-            if q.field == "danger":                       # a skipped danger question is never a "no"
-                self.safety_notes.append(f"turn {turn_index}: immediate-danger question {label.lower()}; "
-                                         f"not treated as 'no one is in danger'")
-                self.open_questions.append("Immediate danger not answered: check in about safety before "
-                                           "relying on this session")
             return
         if q.kind in ("free_account", "procedural"):
             self.open_questions.append(f"{label}: {q.text} ({self.current_section})")
