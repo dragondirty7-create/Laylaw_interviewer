@@ -7,6 +7,7 @@ and legal analysis belong to later Laylaw stages and are refused here.
 from __future__ import annotations
 
 import re
+from typing import Iterable
 
 from .models import Mode
 
@@ -33,16 +34,36 @@ ADVOCACY_PATTERNS = [
 ]
 
 
-def find_advocacy(text: str) -> list[str]:
+def _raw_hits(text: str) -> list[str]:
     hits: list[str] = []
     for p in ADVOCACY_PATTERNS:
         hits += [m.group(0) for m in re.finditer(p, text, flags=re.IGNORECASE)]
     return hits
 
 
-def assert_no_advocacy(text: str, mode: Mode) -> str:
+def _mask_attributed(text: str, attributed: Iterable[str]) -> str:
+    """Set aside words that belong to the interviewee or a document.
+
+    The interviewer may record and repeat an allegation *as the interviewee's
+    words* ("He was abusive."), but may never author one. Only attributed
+    strings that would themselves trip the guard are set aside, and only where
+    they appear verbatim, so generated text around them is still checked."""
+    risky = sorted({a for a in attributed if a and a.strip() and _raw_hits(a)}, key=len, reverse=True)
+    for a in risky:
+        text = text.replace(a, " … ")
+    return text
+
+
+def find_advocacy(text: str, attributed: Iterable[str] = ()) -> list[str]:
+    return _raw_hits(_mask_attributed(text, attributed))
+
+
+def assert_no_advocacy(text: str, mode: Mode, attributed: Iterable[str] = ()) -> str:
+    """Refuse generated advocacy in INTERVIEW mode. `attributed` lists verbatim
+    interviewee/document wording carried in `text`; it is preserved as-is and not
+    treated as the interviewer's own statement. Everything else is checked."""
     if mode == Mode.INTERVIEW:
-        hits = find_advocacy(text)
+        hits = find_advocacy(text, attributed)
         if hits:
             raise ModeViolation(f"advocacy/strategy language in INTERVIEW mode: {hits}")
     return text

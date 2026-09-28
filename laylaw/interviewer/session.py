@@ -274,7 +274,27 @@ class InterviewSession:
 
     # ----------------------------------------------------------- questioning
     def _emit(self, text: str) -> str:
-        return assert_no_advocacy(text, self.mode)
+        return assert_no_advocacy(text, self.mode, attributed=self.attributed_texts())
+
+    def attributed_texts(self) -> list[str]:
+        """Wording that belongs to the interviewee or to a document -- never to the
+        engine. The advocacy guard preserves it verbatim instead of treating it as
+        the interviewer's own statement; all other emitted text is still checked."""
+        out: list[str] = [t.answer for t in self.turns] + [r.text for r in self.raw_answers]
+        for f in self.facts:
+            out += [f.statement, f.location or "", f.told_by or "", *f.people_present]
+            if f.date is not None:
+                out.append(f.date.original_text)
+            for alt in f.alternate_recollections:
+                v = alt.get("value")
+                out += [str(x) for x in v] if isinstance(v, list) else [str(v)]
+        out += [c.raw_text for c in self.corrections]
+        out += [i.answer for i in self.intake] + [o.text for o in self.outcomes]
+        out += [fd.content for fd in self.findings] + [fd.date.original_text for fd in self.findings if fd.date]
+        out += [c.value_text for c in self.candidates] + [c.client_response or "" for c in self.candidates]
+        prefix = "Mentioned by interviewee: "
+        out += [r.label[len(prefix):] for r in self.records if r.label.startswith(prefix)]
+        return [x for x in out if x]
 
     def next_question(self) -> Optional[str]:
         """Return exactly one question (or None when the interview is done)."""

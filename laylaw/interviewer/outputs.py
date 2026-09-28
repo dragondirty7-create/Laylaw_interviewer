@@ -70,6 +70,26 @@ def neutral_fact_line(f: Fact, s: "InterviewSession") -> str:
     return " | ".join(parts)
 
 
+def _guard(obj, s: "InterviewSession"):
+    """Check every generated string for advocacy, value by value. The
+    interviewee's and documents' own wording is preserved verbatim (attributed),
+    so recording an allegation never breaks an output -- but anything the
+    renderer itself writes is still refused if it argues, strategizes, or judges."""
+    attributed = s.attributed_texts()
+
+    def walk(o):
+        if isinstance(o, str):
+            assert_no_advocacy(o, s.mode, attributed)
+        elif isinstance(o, dict):
+            for v in o.values():
+                walk(v)
+        elif isinstance(o, (list, tuple)):
+            for v in o:
+                walk(v)
+    walk(obj)
+    return obj
+
+
 def _unresolved_ids(s: "InterviewSession") -> set[str]:
     return {fid for d in s.discrepancies if d.status == "unresolved" for fid in d.fact_ids}
 
@@ -136,7 +156,7 @@ def interview_record(s: "InterviewSession") -> str:
     del pending
     if s.safety_notes:
         lines += ["", "SAFETY PAUSES"] + [f"- {n}" for n in s.safety_notes]
-    return assert_no_advocacy("\n".join(lines), s.mode)
+    return _guard("\n".join(lines), s)
 
 
 # 2 ---------------------------------------------------------------------------
@@ -161,8 +181,7 @@ def fact_table(s: "InterviewSession") -> list[dict]:
             "PROVENANCE": f.provenance.label + (f" / answer {f.raw_answer_id} chars {f.span[0]}-{f.span[1]}"
                                                 if f.raw_answer_id and f.span else ""),
         })
-    assert_no_advocacy(repr(rows), s.mode)
-    return rows
+    return _guard(rows, s)
 
 
 # 3 ---------------------------------------------------------------------------
@@ -201,8 +220,7 @@ def timeline(s: "InterviewSession") -> list[dict]:
             + [f"[UNRESOLVED {d.field.upper().replace('_', ' ')} DISCREPANCY] {d.description}"
                for d in s.discrepancies if f.id in d.fact_ids and d.status == "unresolved" and d.field != "date"],
         })
-    assert_no_advocacy(repr(events), s.mode)
-    return events
+    return _guard(events, s)
 
 
 # 4 ---------------------------------------------------------------------------
@@ -227,7 +245,7 @@ def evidence_followup(s: "InterviewSession") -> list[str]:
                        f"Do not re-question a child; note only."
                        if f.told_by_is_child else
                        f"Possible witness: {f.told_by} (source of secondhand information in {f.id}).")
-    return [assert_no_advocacy(x, s.mode) for x in out]
+    return _guard(out, s)
 
 
 # 5 ---------------------------------------------------------------------------
@@ -250,13 +268,13 @@ def open_questions(s: "InterviewSession") -> list[str]:
     for q in ([s.pending] if s.pending else []) + s.queue:
         if q.kind == "clarify":
             out.append(f"Not yet asked: {q.text} ({q.fact_id})")
-    return [assert_no_advocacy(x, s.mode) for x in out]
+    return _guard(out, s)
 
 
 # 6 ---------------------------------------------------------------------------
 def requested_outcomes(s: "InterviewSession") -> list[dict]:
-    return [{"ID": o.id, "REQUEST": o.text, "PROVENANCE": o.provenance.label,
-             "NOTE": "Requested future outcome - not a historical fact."} for o in s.outcomes]
+    return _guard([{"ID": o.id, "REQUEST": o.text, "PROVENANCE": o.provenance.label,
+                    "NOTE": "Requested future outcome - not a historical fact."} for o in s.outcomes], s)
 
 
 # 7 ---------------------------------------------------------------------------
@@ -289,7 +307,7 @@ def handoff_summary(s: "InterviewSession") -> str:
         "Downstream stages must preserve provenance and uncertainty and must not rewrite "
         "uncertain statements into definite allegations.",
     ])
-    return assert_no_advocacy(text, s.mode)
+    return _guard(text, s)
 
 
 def all_outputs(s: "InterviewSession") -> dict:
