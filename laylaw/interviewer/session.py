@@ -82,6 +82,7 @@ class PendingQuestion:
     text: str
     fact_id: Optional[str] = None
     field: Optional[str] = None
+    ref: Optional[str] = None   # exact item this question is about (e.g. a discrepancy id); saved with it
 
 
 @dataclass
@@ -419,8 +420,7 @@ class InterviewSession:
             if q.field == "date" and control == "not_sure":
                 fact.date = DateValue("not sure", DatePrecision.UNKNOWN)  # unknown, stated as such
             if q.field == "discrepancy":
-                d = next((x for x in self.discrepancies if q.fact_id in x.fact_ids and x.status == "unresolved"),
-                         None)
+                d = self._discrepancy_for(q)
                 if d:
                     d.resolution_note = f"Interviewee: {'skipped' if control == 'skip' else 'not sure'}"
             fact.open_questions.append(f"{label}: {q.text}")
@@ -631,9 +631,12 @@ class InterviewSession:
         elif q.field == "certainty":
             fact.open_questions.append(f"Certainty clarification (interviewee's words): {text}")
         elif q.field == "discrepancy":
-            d = next((x for x in self.discrepancies if fact.id in x.fact_ids and x.status == "unresolved"), None)
+            d = self._discrepancy_for(q)
             if d:
                 self.resolve_discrepancy(d.id, text)
+            else:
+                fact.open_questions.append(f"Clarification not matched to a single discrepancy "
+                                           f"(interviewee's words): {text}")
         elif q.field == "next":
             if not _is_nothing_more(text):
                 raw = self._add_raw_answer(text, turn_index)
@@ -853,8 +856,17 @@ class InterviewSession:
             "clarify",
             f'Earlier I wrote down "{earlier}". Just now you said "{later}". '
             f"Which is closer to what you remember now?",
-            ask_about.id, "discrepancy"))
+            ask_about.id, "discrepancy", ref=d.id))
         return d
+
+    def _discrepancy_for(self, q: PendingQuestion) -> Optional[Discrepancy]:
+        """The exact discrepancy a clarification question was about. Questions
+        saved before ids were bound fall back only when one discrepancy is open
+        for the fact; the engine never guesses between several."""
+        if q.ref:
+            return next((d for d in self.discrepancies if d.id == q.ref), None)
+        open_ = [d for d in self.discrepancies if q.fact_id in d.fact_ids and d.status == "unresolved"]
+        return open_[0] if len(open_) == 1 else None
 
     def resolve_discrepancy(self, discrepancy_id: str, interviewee_explanation: str) -> Discrepancy:
         """Only the interviewee's own explanation can resolve a discrepancy, and

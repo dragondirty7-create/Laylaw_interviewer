@@ -324,6 +324,20 @@ def test_4_binding_survives_interrupt_and_resume(ws, store):
     assert ds["location"].id == got["location"].id
 
 
+def test_4_legacy_saved_question_without_binding_never_guesses(session):
+    from laylaw.interviewer import InterviewSession
+    _two_conflicts(session, ["location", "people"])
+    session.next_question()
+    d = session.to_dict()                                    # simulate a pre-repair save
+    d["pending"].pop("ref")
+    for q in d["queue"]:
+        q.pop("ref", None)
+    old = InterviewSession.from_dict(d)
+    old.answer("Taylor was there.")
+    assert all(x.status == "unresolved" for x in old.discrepancies)
+    assert any("not matched to a single discrepancy" in o for o in old.facts[0].open_questions)
+
+
 # ======================================================== 5. attributed wording vs guard
 def test_5_client_wording_is_preserved_in_recaps_and_all_seven_outputs(session):
     session.next_question()
