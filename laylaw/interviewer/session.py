@@ -603,8 +603,8 @@ class InterviewSession:
             qs.append(PendingQuestion("clarify", "Who else was there?", fact.id, "people_present"))
         if not fact.location and fact.kind != EventKind.ROUTINE:
             qs.append(PendingQuestion("clarify", "Where did this happen?", fact.id, "location"))
-        if fact.source in (SourceOfKnowledge.PERSONAL_OBSERVATION, SourceOfKnowledge.UNCERTAIN) \
-                and not fact.told_by:
+        if fact.source in (SourceOfKnowledge.PERSONAL_OBSERVATION, SourceOfKnowledge.UNCERTAIN,
+                           SourceOfKnowledge.UNKNOWN) and not fact.told_by:
             qs.append(PendingQuestion("clarify", "How do you know that?", fact.id, "source"))
         if fact.certainty == Certainty.HEDGED:
             qs.append(PendingQuestion("clarify", CERTAINTY_QUESTION, fact.id, "certainty"))
@@ -942,7 +942,10 @@ class InterviewSession:
             raise ValueError(f"{fact_id} was already corrected by {orig.superseded_by}; correct that version")
         raw, span = self._source_slice(corrected_statement, raw_answer_id, span)   # refuse before changing
         detected = classify.classify_source(corrected_statement)
-        source = orig.source if detected == SourceOfKnowledge.REQUEST else detected
+        # A correction revises the same account: when its words give no basis of
+        # their own, it keeps the basis already on record (which may be UNKNOWN)
+        # rather than acquiring one the interviewee never stated.
+        source = orig.source if detected in (SourceOfKnowledge.REQUEST, SourceOfKnowledge.UNKNOWN) else detected
         if date_text is None:
             date_text = classify.find_date_phrase(corrected_statement)  # interviewee's own words only
         new = self.record_fact(corrected_statement, topic=orig.topic, turn_index=turn_index, source=source,

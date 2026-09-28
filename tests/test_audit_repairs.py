@@ -120,7 +120,7 @@ def test_2_unsourced_claim_stays_unknown_everywhere_and_after_reload(ws, store):
     out = outputs.all_outputs(s)
     assert out["fact_table"][0]["KNOWLEDGE SOURCE"] == "UNKNOWN"
     assert out["timeline"][0]["SOURCE OF KNOWLEDGE"] == "UNKNOWN"
-    assert "[UNKNOWN] Recollection" in out["interview_record"]
+    assert "[UNKNOWN] | Recollection" in out["interview_record"]
     assert "UNKNOWN 1" in out["handoff_summary"]
     assert "PERSONAL-OBSERVATION" not in json.dumps(out, default=str)
     again = store.workspace(ws.client_id).load_session(s.interview_id)

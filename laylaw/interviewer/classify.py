@@ -36,6 +36,19 @@ DOCUMENT_PATTERNS = [
     r"\bthe (?:email|text|letter|message|report|receipt|order|record|document) (?:said|says|showed)\b",
     r"\bi (?:read|saw) (?:it )?in (?:the|an?|his|her) (?:email|text|letter|report|document|message)\b",
 ]
+# Firsthand knowledge must be established by the speaker's own words: their own
+# perception ("I saw", "I was there") or their own act ("I sent a text"). A bare
+# claim about someone else ("They were using drugs.") is NOT firsthand; its basis
+# stays UNKNOWN until the interviewee says how they know.
+FIRSTHAND_PATTERNS = [
+    r"\b(?:i|we) (?:personally |actually |also |then )?(?:saw|see|watched|witnessed|noticed|observed)\b",
+    r"\b(?:i|we) (?:was|were) (?:there|present|in the room|with (?:him|her|them))\b",
+    r"\bwith my own eyes\b",
+    r"^\s*(?:and |then |so )?(?:i|we) (?:personally |also |then |later )?"
+    r"(?:sent|texted|emailed|called|asked|told|drove|went|walked|picked|dropped|paid|signed|filed|received|"
+    r"got|found|took|left|arrived|spoke|talked|met|wrote|brought|moved|stayed|lived|live|worked|work|"
+    r"waited|answered|opened|closed|heard (?:him|her|them|it) (?:say|yell|scream|shout))\b",
+]
 REQUEST_PATTERNS = [
     r"\bi want\b", r"\bi'?d like\b", r"\bi would like\b", r"\bi'?m asking for\b",
     r"\bi hope (?:to|that|the court)\b", r"\bi need (?:the court|them|him|her) to\b",
@@ -82,7 +95,8 @@ def classify_certainty(text: str) -> tuple[Certainty, list[str]]:
 
 def classify_source(text: str) -> SourceOfKnowledge:
     """Best-effort guess from wording. Callers may pass an explicit source; the
-    session engine still refuses to *upgrade* a secondhand report."""
+    session engine still refuses to *upgrade* a secondhand report. Firsthand
+    knowledge is never assumed: with no cue in the words, the basis is UNKNOWN."""
     if _find(REQUEST_PATTERNS, text):
         return SourceOfKnowledge.REQUEST
     if _find(DOCUMENT_PATTERNS, text):
@@ -93,7 +107,9 @@ def classify_source(text: str) -> SourceOfKnowledge:
         return SourceOfKnowledge.INFERENCE
     if _find(UNSURE_PATTERNS, text):
         return SourceOfKnowledge.UNCERTAIN
-    return SourceOfKnowledge.PERSONAL_OBSERVATION
+    if _find(FIRSTHAND_PATTERNS, text):
+        return SourceOfKnowledge.PERSONAL_OBSERVATION
+    return SourceOfKnowledge.UNKNOWN
 
 
 def is_request(text: str) -> bool:
