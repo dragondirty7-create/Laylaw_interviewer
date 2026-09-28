@@ -20,8 +20,10 @@
 | `127a465` | 6. Immediate danger asked separately; plain "Yes" pauses |
 | `ae5d5b5` | 7. Conflicts labeled by actual field |
 | `a064d5d` | Follow-up edge cases found in self-review (each with a test) |
+| `6f6dfb7` | Docs for the pass (reviewed by Soul: one HOLD, below) |
+| `10aad5c` | 6 follow-up: a skipped immediate-danger question pauses for safety |
 
-- **Code head:** `a064d5d`. Later commits change only documentation (`HANDOFF.md`, `README.md`, `SECURITY.md`). The final head SHA and its CI runs are recorded in the PR description.
+- **Final code SHA:** `10aad5cc8e14d3ecab667210aec9dd8d99d9ccb4`. The only later commit is the documentation commit that adds this update (`HANDOFF.md` only). A commit cannot contain its own hash, so that exact final head SHA and its CI runs are recorded in the PR #1 description and the completion comment.
 
 ## Files changed since `fdd7d449`
 - **Engine:** `laylaw/interviewer/session.py`, `classify.py`, `guard.py`, `outputs.py`, `paths.py`, `models.py`
@@ -30,7 +32,7 @@
 - **Docs:** `HANDOFF.md`, `README.md`, `SECURITY.md` (one limitation added; real-client restriction unchanged)
 
 ## Test results
-- `python -m pytest -q`: **96 passed** locally on Python 3.10, 3.11 and 3.12 (was 40). Breakdown: `test_required.py` 18, `test_repair_pass.py` 19, `test_extra.py` 3, `test_audit_repairs.py` 56.
+- `python -m pytest -q`: **97 passed** locally on Python 3.10 and 3.12 (was 40 before this pass, 96 at `6f6dfb7`). Breakdown: `test_required.py` 18, `test_repair_pass.py` 19, `test_extra.py` 3, `test_audit_repairs.py` 57.
 - **Regression tests catch the original failures:** the final `tests/test_audit_repairs.py` run against the unmodified `fdd7d449` source gives **40 failed, 12 passed**. Failures per item: 1 → 4, 2 → 3, 3 → 12, 4 → 5, 5 → 2, 6 → 10, 7 → 4. The 12 that pass there are deliberate controls for behavior that must not change (explicit firsthand / secondhand / inference / document typing; bare "No" changes nothing; genuine date conflicts keep the date label).
 - The audit's literal reproductions were replayed on the repaired head: generated `record_fact` → `ProvenanceError`; "They were using drugs." → `unknown`; recap "Yes" → fact unchanged, next question "What should I change?"; "Taylor was there." → PEOPLE PRESENT clarified, LOCATION still unresolved; "He was abusive." → all seven outputs render with the wording kept; danger "Yes" → `paused_for_safety`; Library-vs-Park → LOCATION label only.
 - CI naming check (legacy name) clean.
@@ -44,8 +46,16 @@
 | 3 | Ack / addition / correction (audit 1) | **Repaired** | Each check question has a role. A bare acknowledgement never becomes content: it asks one follow-up ("What should I change?", "Which part did I make sound more certain than you meant?", "What did I miss?"); the numbered-item question comes only after substantive words exist. "Anything I missed?" records additions and replaces nothing. A leading "Yes," is sliced off; the full answer stays on the Correction. |
 | 4 | Discrepancy binding (audit 2) | **Repaired** | `PendingQuestion.ref` holds the discrepancy id and is saved/loaded. Answers, skips and "not sure" act on that discrepancy only. Pre-repair saves fall back only when exactly one discrepancy is open for the fact; with several, nothing is resolved and the answer is kept as a note. |
 | 5 | Attributed wording vs guard (audit 3) | **Repaired** | The guard takes `attributed` wording (`InterviewSession.attributed_texts()`: answers, statements, fact fields, corrections, intake, requests, document findings/candidates, interviewee-mentioned records). Only attributed strings that would themselves trip a pattern are set aside, verbatim. All renderers and `_emit` use it; Fact Table/Timeline are checked value by value. Engine-authored advocacy still raises. |
-| 6 | Immediate danger (audit 6) | **Repaired** | Preflight asks "Is anyone in immediate danger right now?" alone, then "Is there another urgent concern we should know about before we start?". Anything but a clear no ("Yes", "Maybe", "not sure") pauses for safety and is kept as intake; the danger question isn't re-asked after the safety check. Skip is recorded and flagged, never read as "no". "No"/"not yet" to the safety check keeps the pause; "No, I'm safe now" resumes. Non-danger urgency stays administrative intake. |
+| 6 | Immediate danger (audit 6) | **Repaired** (skip follow-up `10aad5c`) | Preflight asks "Is anyone in immediate danger right now?" alone, then "Is there another urgent concern we should know about before we start?". Anything but a clear no ("Yes", "Maybe", "not sure", or **skip**) pauses for safety and is kept as intake (skip as `status="skipped"`, never read as "no"); the safety check is the next question, the pause survives save/reload, and the danger question isn't re-asked after the safety check. "No"/"not yet" to the safety check keeps the pause; "No, I'm safe now" resumes. Non-danger urgency stays administrative intake. |
 | 7 | Conflict labels (audit 7) | **Repaired** | `outputs.discrepancy_label()` names the actual field (DATE, LOCATION, PEOPLE PRESENT, SEQUENCE, ACCOUNT) in the Fact Table, Timeline, Open Questions and Interview Record. |
+
+## Final review follow-up (Soul, at `6f6dfb7`)
+- **Finding:** a typed or API `skip` on the immediate-danger question was recorded and flagged but left the session ACTIVE, so ordinary preflight continued. Everything else in the pass was reviewed as consistent.
+- **Fix (`10aad5c`):** skip now takes the same path as any non-"no" answer: intake `status="skipped"`, a safety note and open question, `PAUSED_FOR_SAFETY`, and the existing safety check next. A clear "No" is unchanged. No redesign of preflight or the safety flow.
+- **Test:** `test_6_skipping_the_danger_question_pauses_and_is_not_treated_as_safe` (API and typed skip) asserts the skipped intake item, the pause, the safety question next, the pause after save/reload, and that ordinary preflight resumes only after the safety check. It fails on the `6f6dfb7` code (2 of 2 cases; the session stayed ACTIVE) and passes now.
+- **Results:** 97 passed locally (3.10, 3.12). CI on `10aad5cc8e14d3ecab667210aec9dd8d99d9ccb4`, all jobs success (3.10 and 3.12; full suite and naming check):
+  - pull_request: https://github.com/dragondirty7-create/Laylaw_interviewer/actions/runs/36466587708
+  - push: https://github.com/dragondirty7-create/Laylaw_interviewer/actions/runs/36466582003
 
 ## Remaining limitations
 - **Real-client use remains blocked.** No authentication, authorization, or encryption at rest (see `SECURITY.md`). This pass does not change that boundary; this is a synthetic-data prototype.
@@ -56,7 +66,7 @@
 - Prior items still stand: no semantic contradiction detection between free-text answers; correction content is the interviewee's correction sentence, not a merged restatement; next-hearing dates appear in the Timeline.
 
 ## Next recommended step
-1. Soul reviews PR #1 at the final head recorded in the PR description, with its passing CI runs.
+1. Soul's final review of PR #1 at the final head recorded in the PR description and completion comment. PR #1 stays open and unmerged until then.
 2. If accepted, merge as a clearly documented synthetic-data library. Real-client use waits for the `SECURITY.md` prerequisites.
 3. Then decide on the deferred items: the LLM conversation layer (engine stays the only writer of the record) and question prioritization.
 
