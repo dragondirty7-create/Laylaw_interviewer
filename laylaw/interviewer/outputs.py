@@ -30,6 +30,18 @@ SOURCE_LABEL = {
     SourceOfKnowledge.REQUEST: "REQUEST",
 }
 UNRESOLVED_DATE = "[UNRESOLVED DATE DISCREPANCY]"
+_FIELD_LABELS = {"date": "DATE", "location": "LOCATION", "people_present": "PEOPLE PRESENT",
+                 "sequence": "SEQUENCE", "account": "ACCOUNT"}
+
+
+def discrepancy_label(d) -> str:
+    """[UNRESOLVED <FIELD> DISCREPANCY], named for the field actually in conflict."""
+    name = _FIELD_LABELS.get(d.field, d.field.upper().replace("_", " "))
+    return f"[UNRESOLVED {name} DISCREPANCY]"
+
+
+def _unresolved_for(s: "InterviewSession", fact_id: str) -> list:
+    return [d for d in s.discrepancies if d.status == "unresolved" and fact_id in d.fact_ids]
 
 
 def _quote_allowed(f: Fact, s: "InterviewSession") -> bool:
@@ -90,10 +102,6 @@ def _guard(obj, s: "InterviewSession"):
     return obj
 
 
-def _unresolved_ids(s: "InterviewSession") -> set[str]:
-    return {fid for d in s.discrepancies if d.status == "unresolved" for fid in d.fact_ids}
-
-
 # 1 ---------------------------------------------------------------------------
 def interview_record(s: "InterviewSession") -> str:
     status = s.transcript_status.value
@@ -135,7 +143,7 @@ def interview_record(s: "InterviewSession") -> str:
     if s.discrepancies:
         lines += ["", "UNCERTAINTIES AND DISCREPANCIES"]
         for d in s.discrepancies:
-            tag = UNRESOLVED_DATE if d.status == "unresolved" and d.field == "date" else f"[{d.status.upper()}]"
+            tag = discrepancy_label(d) if d.status == "unresolved" else f"[{d.status.upper()}]"
             lines.append(f"- {d.id} {tag} {d.description}"
                          + (f" | {d.resolution_note}" if d.resolution_note else ""))
     if s.corrections:
@@ -161,13 +169,10 @@ def interview_record(s: "InterviewSession") -> str:
 
 # 2 ---------------------------------------------------------------------------
 def fact_table(s: "InterviewSession") -> list[dict]:
-    unresolved = _unresolved_ids(s)
     rows = []
     for f in s.facts:
         records = [next(r for r in s.records if r.id == rid).describe() for rid in f.possible_records]
-        notes = list(f.open_questions)
-        if f.id in unresolved:
-            notes.append(UNRESOLVED_DATE)
+        notes = list(f.open_questions) + [f"{discrepancy_label(d)} {d.id}" for d in _unresolved_for(s, f.id)]
         rows.append({
             "FACT ID": f.id,
             "STATEMENT": statement_text(f, s),
@@ -188,7 +193,6 @@ def fact_table(s: "InterviewSession") -> list[dict]:
 def timeline(s: "InterviewSession") -> list[dict]:
     """Historical facts only. Requested outcomes live in a separate list and are
     never placed here. Undated facts are listed after dated ones, not guessed."""
-    unresolved = _unresolved_ids(s)
     historical = [f for f in s.facts if f.source != SourceOfKnowledge.REQUEST]
 
     def root(f: Fact) -> Fact:
@@ -216,9 +220,8 @@ def timeline(s: "InterviewSession") -> list[dict]:
             "VERSION": version_note(f) or "current",
             "POSSIBLE SUPPORTING RECORDS": [
                 next(r for r in s.records if r.id == rid).describe() for rid in f.possible_records],
-            "UNRESOLVED QUESTIONS": f.open_questions + ([UNRESOLVED_DATE] if f.id in unresolved else [])
-            + [f"[UNRESOLVED {d.field.upper().replace('_', ' ')} DISCREPANCY] {d.description}"
-               for d in s.discrepancies if f.id in d.fact_ids and d.status == "unresolved" and d.field != "date"],
+            "UNRESOLVED QUESTIONS": f.open_questions
+            + [f"{discrepancy_label(d)} {d.description}" for d in _unresolved_for(s, f.id)],
         })
     return _guard(events, s)
 
@@ -260,7 +263,7 @@ def open_questions(s: "InterviewSession") -> list[str]:
             out.append(f"{f.id}: who was present (not yet stated)")
     for d in s.discrepancies:
         if d.status == "unresolved":
-            out.append(f"{d.id}: {UNRESOLVED_DATE} {d.description}")
+            out.append(f"{d.id}: {discrepancy_label(d)} {d.description}")
     for c in s.candidates:
         if c.status == "candidate":
             out.append(f"{c.id}: ask the client whether the document's {c.field} ('{c.value_text}') "
