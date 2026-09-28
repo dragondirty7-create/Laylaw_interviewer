@@ -161,6 +161,7 @@ def test_criminal_path_starts_with_paperwork_and_never_requires_conduct_narrativ
 
     asked = []
     answers = {
+        "this interview is for Jordan Avery": "Yes, that's right",
         "is anyone in immediate danger": "No",
         "hearing or other deadline": "An arraignment around October 15, 2026",
         "help with first": "Understanding my paperwork",
@@ -182,11 +183,13 @@ def test_criminal_path_starts_with_paperwork_and_never_requires_conduct_narrativ
 
     # Intake first, then paperwork -- the charges question is the first interview question.
     first_section_q = next(i for i, q in enumerate(asked) if "charges are listed" in q)
-    assert first_section_q == 5                                     # after the 5 preflight questions
+    assert first_section_q == 6                                     # after the 6 preflight questions
+    assert asked[0].startswith("Just to confirm before we begin: this interview is for Jordan Avery")
     joined = "\n".join(asked).lower()
     assert "events in question" not in joined and "what happened" not in joined.split("procedural history")[0]
     # Intake answers are administrative metadata, not historical facts.
-    assert {i.key for i in s.intake} == {"urgent", "deadline", "help_first", "custody", "counsel"}
+    assert {i.key for i in s.intake} == {"confirm_workspace", "urgent", "deadline", "help_first", "custody",
+                                         "counsel"}
     assert all(f.statement != "Out of custody" for f in s.facts)
     charge = next(f for f in s.facts if "misdemeanor" in f.statement)
     assert charge.source == SourceOfKnowledge.DOCUMENT_RECOLLECTION
@@ -204,6 +207,8 @@ def test_preflight_captures_intake_separately_and_pauses_for_present_danger(ws):
     s, _ = paths.start_path("family_law", ws, case_id="CASE-FICTIONAL-FL", interviewee="Jordan Avery",
                             interviewer="Laylaw Interviewer", purpose="Synthetic intake",
                             interviewee_is_adult=True)
+    assert s.next_question().startswith("Just to confirm before we begin: this interview is for Jordan Avery")
+    s.answer("Yes")
     q = s.next_question()
     assert q.startswith("Before we start: is anyone in immediate danger")
     s.answer("Yes, he is outside right now and threatening to hurt me.")
@@ -214,7 +219,7 @@ def test_preflight_captures_intake_separately_and_pauses_for_present_danger(ws):
     s.answer("A hearing sometime in November 2026")
     s.next_question()
     s.answer("Setting up a schedule")
-    assert [i.key for i in s.intake] == ["deadline", "help_first"]
+    assert [i.key for i in s.intake] == ["confirm_workspace", "deadline", "help_first"]
     assert s.facts == []                                    # intake is not historical fact
     assert "custody" not in [i.key for i in s.intake]       # criminal-only questions not asked here
 
@@ -305,9 +310,17 @@ def test_section_selection_does_not_mechanically_require_every_family_law_sectio
                             preflight=False)
     assert len(paths.available_sections("family_law")) == 26          # canonical set preserved
     assert len(s.sections) < 26 and s.sections == paths.default_sections("family_law")
-    assert "Specific incidents" not in s.sections and "Specific safety concerns" not in s.sections
+    # Build Notes family path: children/arrangements, orders & filed papers, service status,
+    # income/expenses/support, relevant events & records.
+    for name in ("Current household", "Court orders", "Court filings", "Service status",
+                 "Finances relevant to family issues", "Support history", "Specific incidents",
+                 "Available records"):
+        assert name in s.sections
+    assert "Specific safety concerns" not in s.sections           # never assumed
+    assert "It's fine to say there aren't any." in s.free_account_prompt("Specific incidents")
     suggested = paths.suggest_sections("family_law", "Mostly problems with school pickups and texts")
     assert "Children's schooling" in suggested and "Exchanges / transportation" in suggested
+    assert "Specific safety concerns" in paths.suggest_sections("family_law", "I don't feel safe")
     assert "Children's schooling" not in s.sections                  # suggestions are never auto-added
     s.add_section("Children's schooling")
     assert s.sections[-1] == "Children's schooling"
@@ -404,3 +417,45 @@ def test_hedge_covers_the_date_of_the_same_statement(session):
     assert f.date.precision == DatePrecision.APPROXIMATE           # not MONTH ONLY
     firm = session.record_fact("Sam Rowe moved in March 2025.", topic="Housing", date_text="March 2025")
     assert firm.date.precision == DatePrecision.MONTH_ONLY          # unhedged keeps its precision
+
+
+# ============================================================ Build Notes alignment
+def test_wrong_workspace_stops_the_interview_until_an_operator_confirms(ws):
+    s, _ = paths.start_path("family_law", ws, case_id="CASE-FICTIONAL-WS", interviewee="Jordan Avery",
+                            interviewer="Laylaw Interviewer", purpose="x", interviewee_is_adult=True)
+    s.next_question()
+    s.answer("No, that's not me")
+    assert s.workspace_confirmed is False and s.status == SessionStatus.PAUSED
+    assert s.next_question() is None                          # nothing more is asked
+    assert any(o.startswith("Workspace NOT confirmed") for o in s.open_questions)
+    assert s.facts == []
+    again = ws.load_session(s.interview_id)                   # survives reload
+    assert again.next_question() is None
+    again.confirm_workspace()
+    assert again.next_question().startswith("Before we start: is anyone in immediate danger")
+    # "Not sure" / skip is never treated as confirmation.
+    t, _ = paths.start_path("family_law", ws, case_id="CASE-FICTIONAL-WS2", interviewee="Jordan Avery",
+                            interviewer="L", purpose="x", interviewee_is_adult=True)
+    t.next_question()
+    t.answer("not sure")
+    assert t.workspace_confirmed is False and t.next_question() is None
+
+
+def test_summary_review_separates_reported_documents_and_unknown(session):
+    f = session.record_fact("Casey Lin dropped off the kids.", topic="Specific incidents",
+                            date_text="around June 2024")
+    rec = session.add_upload("log-FICTIONAL.pdf", b"fictional", label="Pickup log (fictional)",
+                             related_fact_ids=[f.id])
+    session.mark_record_reviewed(rec.id)
+    session.add_document_finding(f.id, rec.id, "Pickup logged at 5 pm.", date_text="June 12, 2024")
+    session.propose_document_candidate(rec.id, "date", "June 12, 2024", fact_id=f.id)
+    q = advance_to(session, lambda x: x.endswith("Is there anything important that I didn't ask about?"),
+                   filler="No")
+    reported = q.split("WHAT YOU REPORTED")[1].split("WHAT DOCUMENTS SHOW")[0]
+    docs = q.split("WHAT DOCUMENTS SHOW")[1].split("WHAT REMAINS UNKNOWN")[0]
+    unknown = q.split("WHAT REMAINS UNKNOWN")[1]
+    assert "Casey Lin dropped off the kids." in reported and "Pickup logged" not in reported
+    assert "Pickup logged at 5 pm." in docs and "(not yet confirmed by you)" in docs
+    assert "Casey Lin dropped off the kids." not in docs
+    assert unknown.strip()
+    assert find_advocacy(q) == []

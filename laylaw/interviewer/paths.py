@@ -32,11 +32,17 @@ FAMILY_LAW_SECTIONS = [
     "Specific incidents", "Other caregivers", "Court orders", "Court filings", "Service status",
     "Prior agreements", "Current requested arrangement", "Available records", "Witnesses", "Open questions",
 ]
-# A short neutral starting set. It contains no allegation-shaped section
-# ("Specific safety concerns", "Specific incidents") -- those are added only
-# when the interviewee's own intake answer or account makes them relevant.
+# Default selection follows the Build Notes family-law path:
+#   children and current arrangements -> existing orders and filed papers ->
+#   service status -> income, expenses, and support -> relevant events and records,
+# after the basics and before the requested arrangement (kept separate from facts).
+# "Specific safety concerns" is NOT in the default: it is added only when the
+# interviewee's own intake answer or account makes it relevant, and "Specific
+# incidents" uses a neutral prompt that allows "none".
 FAMILY_LAW_DEFAULT = ["Case basics", "Current household", "Current parenting routine", "Court orders",
-                      "Current requested arrangement", "Available records", "Open questions"]
+                      "Court filings", "Service status", "Finances relevant to family issues",
+                      "Support history", "Specific incidents", "Available records",
+                      "Current requested arrangement"]
 
 # ---------------------------------------------------------- criminal defense
 # Procedural/paperwork intake first. A detailed account of the alleged conduct is
@@ -106,6 +112,12 @@ SECTION_SPECS: dict[str, SectionSpec] = {
         optional_note="Optional. Not part of required intake."),
     "Current requested arrangement": SectionSpec(
         "Current requested arrangement", prompt="What would you like to happen going forward?", kind="request"),
+    "Current household": SectionSpec(
+        "Current household", prompt="Tell me about the children and the current living arrangements."),
+    "Specific incidents": SectionSpec(
+        "Specific incidents",
+        prompt=("Are there particular events that matter for this case? If so, tell me about them from the "
+                "beginning. It's fine to say there aren't any.")),
     "Current parenting routine": SectionSpec(
         "Current parenting routine", prompt="Tell me what normally happens with the current parenting routine.",
         kind="routine"),
@@ -113,13 +125,17 @@ SECTION_SPECS: dict[str, SectionSpec] = {
 
 PATHS = {
     "family_law": {"sections": FAMILY_LAW_SECTIONS, "default": FAMILY_LAW_DEFAULT, "notice": None,
-                   "preflight": ["urgent", "deadline", "help_first"]},
+                   "preflight": ["confirm_workspace", "urgent", "deadline", "help_first"]},
     "criminal_defense": {"sections": CRIMINAL_DEFENSE_SECTIONS, "default": CRIMINAL_DEFENSE_DEFAULT,
                          "notice": CRIMINAL_DEFENSE_NOTICE,
-                         "preflight": ["urgent", "deadline", "help_first", "custody", "counsel"]},
+                         "preflight": ["confirm_workspace", "urgent", "deadline", "help_first", "custody",
+                                       "counsel"]},
 }
 
 PREFLIGHT_QUESTIONS = {
+    # Build Notes: "Choose the client and case type; confirm whose workspace is open."
+    "confirm_workspace": "Just to confirm before we begin: this interview is for {interviewee} (case {case_id}). "
+                         "Is that right?",
     "urgent": "Before we start: is anyone in immediate danger right now, or is there another urgent concern?",
     "deadline": "Is there a court hearing or other deadline coming up? If so, when?",
     "help_first": "What do you need help with first?",

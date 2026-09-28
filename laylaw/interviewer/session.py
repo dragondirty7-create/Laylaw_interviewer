@@ -122,6 +122,7 @@ class InterviewSession:
     safety_notes: list[str] = field(default_factory=list)
     oriented: bool = False
     final_check_started: bool = False
+    workspace_confirmed: Optional[bool] = None   # None = not asked; False = blocked until confirmed
     workspace: Any = None  # not serialized
 
     # ------------------------------------------------------------------ setup
@@ -141,7 +142,8 @@ class InterviewSession:
         s.workspace = workspace
         if preflight:
             s.current_section = "Intake"
-            s.queue = [PendingQuestion("preflight", PREFLIGHT_QUESTIONS[k], field=k) for k in preflight]
+            s.queue = [PendingQuestion("preflight", PREFLIGHT_QUESTIONS[k].format(
+                interviewee=interviewee, case_id=case_id), field=k) for k in preflight]
         s.save()
         return s
 
@@ -211,6 +213,7 @@ class InterviewSession:
             sequence_links=d.get("sequence_links", []),
             open_questions=d["open_questions"], safety_notes=d["safety_notes"], oriented=d["oriented"],
             final_check_started=d["final_check_started"],
+            workspace_confirmed=d.get("workspace_confirmed"),
         )
 
     # ----------------------------------------------------------- interrupt/resume
@@ -281,6 +284,8 @@ class InterviewSession:
             return self._emit(SAFETY_QUESTION)
         if self.status == SessionStatus.CLOSED:
             return None
+        if self.workspace_confirmed is False:
+            return None  # wrong workspace: nothing more is asked until an operator confirms
         if self.status == SessionStatus.PAUSED:
             self.status = SessionStatus.ACTIVE
         if self.pending is None:
@@ -291,6 +296,8 @@ class InterviewSession:
         text = self.pending.text
         if self.pending.kind == "recap" and self.pending.field == "0":
             text = self.section_recap(with_questions=False) + "\n\n" + text
+        if self.pending.kind == "final" and self.pending.field == "0":
+            text = self.summary_review() + "\n\n" + text
         if self.pending.kind == "free_account" and not self.oriented:
             self.oriented = True
             text = ORIENTATION_TEXT + "\n\n" + text
@@ -410,6 +417,8 @@ class InterviewSession:
         if q.kind == "preflight":
             self.intake.append(IntakeItem(q.field, q.text, "", self._provenance(turn_index),
                                           status="skipped" if control == "skip" else "not_sure"))
+            if q.field == "confirm_workspace":
+                self._set_workspace_confirmation(False)   # unconfirmed is never treated as confirmed
             return
         if q.kind in ("free_account", "procedural"):
             self.open_questions.append(f"{label}: {q.text} ({self.current_section})")
@@ -434,6 +443,26 @@ class InterviewSession:
     # ----------------------------------------------------------- intake
     def _record_intake(self, q: PendingQuestion, text: str, turn_index: int) -> None:
         self.intake.append(IntakeItem(q.field, q.text, text, self._provenance(turn_index)))
+        if q.field == "confirm_workspace":
+            self._set_workspace_confirmation(bool(re.match(r"(?i)\s*(?:yes|yeah|yep|correct|right|that'?s right|"
+                                                           r"it is|confirmed)\b", text)) and
+                                             not re.search(r"(?i)\b(?:not|wrong|isn'?t|no)\b", text))
+
+    def _set_workspace_confirmation(self, confirmed: bool) -> None:
+        self.workspace_confirmed = confirmed
+        if not confirmed:
+            self.status = SessionStatus.PAUSED
+            self.open_questions.append("Workspace NOT confirmed by the interviewee. Stop and open the correct "
+                                       "client's workspace before continuing; nothing further was asked here.")
+        self.save()
+
+    def confirm_workspace(self) -> None:
+        """Operator confirms the right workspace is open after a mismatch was resolved."""
+        self.workspace_confirmed = True
+        self.open_questions = [o for o in self.open_questions if not o.startswith("Workspace NOT confirmed")]
+        if self.status == SessionStatus.PAUSED:
+            self.status = SessionStatus.ACTIVE
+        self.save()
 
     def record_intake(self, key: str, answer: str) -> IntakeItem:
         item = IntakeItem(key, PREFLIGHT_QUESTIONS.get(key, key), answer, self._provenance(None))
@@ -980,6 +1009,25 @@ class InterviewSession:
         text = f"Here's what I have for {section.lower()}:\n{body}"
         if with_questions:
             text += "\n\n" + "\n".join(END_OF_SECTION_QUESTIONS)
+        return self._emit(text)
+
+    def summary_review(self) -> str:
+        """Build Notes: review the summary together, separating what the client
+        reported, what documents show, and what remains unknown."""
+        from .outputs import neutral_fact_line
+        reported = [f"- {neutral_fact_line(f, self)}" for f in self._current_facts()] or ["- (nothing recorded)"]
+        docs = [f"- {fd.provenance.label}: {fd.content} ({fd.consistency} with the recollection)"
+                for fd in self.findings]
+        docs += [f"- {c.provenance.label}: {c.field} '{c.value_text}' (client {c.status})"
+                 for c in self.candidates if c.status in ("confirmed", "corrected")]
+        docs += [f"- {c.provenance.label}: {c.field} '{c.value_text}' (not yet confirmed by you)"
+                 for c in self.candidates if c.status == "candidate"]
+        unknown = [f"- {o}" for o in self.open_questions]
+        unknown += [f"- {d.id}: two recollections kept ({d.field}): {d.description}"
+                    for d in self.discrepancies if d.status == "unresolved"]
+        text = ("Before we finish, here is the summary.\n\nWHAT YOU REPORTED\n" + "\n".join(reported)
+                + "\n\nWHAT DOCUMENTS SHOW\n" + ("\n".join(docs) or "- (no documents reviewed yet)")
+                + "\n\nWHAT REMAINS UNKNOWN\n" + ("\n".join(unknown) or "- (nothing listed)"))
         return self._emit(text)
 
     # ----------------------------------------------------------- transcript status
