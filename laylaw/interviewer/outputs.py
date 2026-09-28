@@ -13,7 +13,8 @@ from typing import TYPE_CHECKING
 
 from .guard import assert_no_advocacy
 from .models import (
-    Certainty, DatePrecision, Fact, ReviewStatus, SourceOfKnowledge, TranscriptStatus,
+    Certainty, DatePrecision, Fact, FactStatus, ReviewStatus, SourceOfKnowledge, SupportingSourceType,
+    TranscriptStatus,
 )
 
 if TYPE_CHECKING:
@@ -49,8 +50,18 @@ def date_text(f: Fact) -> str:
     return f.date.display()
 
 
+def version_note(f: Fact) -> str | None:
+    if f.status == FactStatus.SUPERSEDED:
+        return f"SUPERSEDED by interviewee correction {f.superseded_by} (original kept)"
+    if f.correction_of:
+        return f"CORRECTION of {f.correction_of} (interviewee's words)"
+    return None
+
+
 def neutral_fact_line(f: Fact, s: "InterviewSession") -> str:
     parts = [f"[{SOURCE_LABEL[f.source]}]", statement_text(f, s), f"Date: {date_text(f)}"]
+    if version_note(f):
+        parts.insert(0, f"[{version_note(f)}]")
     if f.certainty != Certainty.STATED:
         parts.append(f"Interviewee uncertainty preserved ({', '.join(f.hedges) or f.certainty.value})")
     if f.told_by:
@@ -81,8 +92,18 @@ def interview_record(s: "InterviewSession") -> str:
     ]
     if s.transcript_status == TranscriptStatus.RECONSTRUCTED:
         lines.append("These notes were reconstructed from available session data. They are not a transcript.")
+    if s.intake:
+        lines += ["INTAKE (administrative; not historical findings)"]
+        for i in s.intake:
+            lines.append(f"- {i.key}: {i.answer or '(' + i.status + ')'}")
+        lines.append("")
     for f in s.facts:
-        lines.append(f"- {f.id} ({f.topic}) {neutral_fact_line(f, s)}")
+        src = f" [from answer {f.raw_answer_id}]" if f.raw_answer_id else ""
+        ctx = f" [answering: {f.question_context}]" if f.question_context else ""
+        lines.append(f"- {f.id} ({f.topic}) {neutral_fact_line(f, s)}{src}{ctx}")
+    if s.raw_answers:
+        lines += ["", "ANSWERS AS ENTERED (the interviewee's own text; not a transcript)"]
+        lines += [f"- {r.id} (turn {r.turn_index}, {r.section}): {r.text}" for r in s.raw_answers]
     for fd in s.findings:
         f = s.get_fact(fd.fact_id)
         lines += [f"- Document check for {f.id}:",
@@ -98,7 +119,21 @@ def interview_record(s: "InterviewSession") -> str:
             lines.append(f"- {d.id} {tag} {d.description}"
                          + (f" | {d.resolution_note}" if d.resolution_note else ""))
     if s.corrections:
-        lines += ["", "CORRECTIONS BY INTERVIEWEE"] + [f"- {c}" for c in s.corrections]
+        lines += ["", "CORRECTIONS BY INTERVIEWEE (originals kept)"]
+        for c in s.corrections:
+            if c.status == "applied":
+                lines.append(f"- {c.id} via {c.via}: {c.target_fact_id} -> {c.new_fact_id} | "
+                             f"interviewee's words: {c.raw_text}")
+            else:
+                lines.append(f"- {c.id} via {c.via}: not yet matched to an item | interviewee's words: {c.raw_text}")
+    pending = [c for c in s.candidates if c.status == "candidate"]
+    if s.candidates:
+        lines += ["", "DOCUMENT-DERIVED CANDIDATES (not part of the recollection unless confirmed)"]
+        for c in s.candidates:
+            lines.append(f"- {c.id} [{c.provenance.label}] {c.field}: {c.value_text} | status: {c.status}"
+                         + (f" | client: {c.client_response}" if c.client_response else "")
+                         + (f" | new version {c.resulting_fact_id}" if c.resulting_fact_id else ""))
+    del pending
     if s.safety_notes:
         lines += ["", "SAFETY PAUSES"] + [f"- {n}" for n in s.safety_notes]
     return assert_no_advocacy("\n".join(lines), s.mode)
@@ -121,8 +156,10 @@ def fact_table(s: "InterviewSession") -> list[dict]:
             "RELATED EVENT": f.event_key,
             "POTENTIAL SUPPORTING RECORD": records,
             "VERIFICATION STATUS": f.verification.value,
-            "NOTES": notes,
-            "PROVENANCE": f.provenance.label,
+            "VERSION": version_note(f) or "current",
+            "NOTES": notes + [f"{a['field']} also recalled as: {a['value']}" for a in f.alternate_recollections],
+            "PROVENANCE": f.provenance.label + (f" / answer {f.raw_answer_id} chars {f.span[0]}-{f.span[1]}"
+                                                if f.raw_answer_id and f.span else ""),
         })
     assert_no_advocacy(repr(rows), s.mode)
     return rows
@@ -134,11 +171,19 @@ def timeline(s: "InterviewSession") -> list[dict]:
     never placed here. Undated facts are listed after dated ones, not guessed."""
     unresolved = _unresolved_ids(s)
     historical = [f for f in s.facts if f.source != SourceOfKnowledge.REQUEST]
-    dated = sorted([f for f in historical if f.date and f.date.year],
-                   key=lambda f: f.date.sort_key())
-    undated = [f for f in historical if not (f.date and f.date.year)]
+
+    def root(f: Fact) -> Fact:
+        while f.correction_of:
+            f = s.get_fact(f.correction_of)
+        return f
+
+    def key(f: Fact):
+        r = root(f)
+        dated = r.date is not None and r.date.year is not None
+        return (0 if dated else 1, r.date.sort_key() if dated else (0, 0, 0), s.facts.index(r), s.facts.index(f))
+
     events = []
-    for f in dated + undated:
+    for f in sorted(historical, key=key):
         events.append({
             "EVENT ID": f.id,
             "DATE": date_text(f),
@@ -149,9 +194,12 @@ def timeline(s: "InterviewSession") -> list[dict]:
             "KIND": f.kind.value,
             "SEQUENCE": f.sequence_hint or "not stated",
             "SOURCE OF KNOWLEDGE": SOURCE_LABEL[f.source],
+            "VERSION": version_note(f) or "current",
             "POSSIBLE SUPPORTING RECORDS": [
                 next(r for r in s.records if r.id == rid).describe() for rid in f.possible_records],
-            "UNRESOLVED QUESTIONS": f.open_questions + ([UNRESOLVED_DATE] if f.id in unresolved else []),
+            "UNRESOLVED QUESTIONS": f.open_questions + ([UNRESOLVED_DATE] if f.id in unresolved else [])
+            + [f"[UNRESOLVED {d.field.upper().replace('_', ' ')} DISCREPANCY] {d.description}"
+               for d in s.discrepancies if f.id in d.fact_ids and d.status == "unresolved" and d.field != "date"],
         })
     assert_no_advocacy(repr(events), s.mode)
     return events
@@ -162,8 +210,17 @@ def evidence_followup(s: "InterviewSession") -> list[str]:
     out = []
     for r in s.records:
         facts = ", ".join(r.related_fact_ids) or "no specific fact yet"
-        state = "may help clarify" if r.review_status == ReviewStatus.UNREVIEWED else "reviewed; see document check"
-        out.append(f"{r.describe()} - {state} ({facts}). Attached to client {r.client_id}, session {r.session_id}.")
+        if r.source_type == SupportingSourceType.WITNESS:
+            state = "possible witness; may help clarify" if r.review_status == ReviewStatus.UNREVIEWED \
+                else "contacted"
+        else:
+            state = "may help clarify" if r.review_status == ReviewStatus.UNREVIEWED else "reviewed; see document check"
+        out.append(f"[{r.source_type.value.upper()}] {r.describe()} - {state} ({facts}). "
+                   f"Attached to client {r.client_id}, session {r.session_id}.")
+    for c in s.candidates:
+        if c.status == "candidate":
+            out.append(f"[DOCUMENT-DERIVED CANDIDATE] {c.id}: {c.field} '{c.value_text}' from {c.provenance.label} "
+                       f"- waiting for the client to confirm or correct.")
     for f in s.facts:
         if f.source == SourceOfKnowledge.SECONDHAND and f.told_by:
             out.append(f"Possible witness: {f.told_by} (source of secondhand information in {f.id}). "
@@ -177,6 +234,8 @@ def evidence_followup(s: "InterviewSession") -> list[str]:
 def open_questions(s: "InterviewSession") -> list[str]:
     out = list(s.open_questions)
     for f in s.facts:
+        if f.status != FactStatus.CURRENT or f.question_context:
+            continue
         if f.date is None or f.date.precision == DatePrecision.UNKNOWN:
             out.append(f"{f.id}: when this happened (not yet known)")
         if not f.people_present:
@@ -184,6 +243,10 @@ def open_questions(s: "InterviewSession") -> list[str]:
     for d in s.discrepancies:
         if d.status == "unresolved":
             out.append(f"{d.id}: {UNRESOLVED_DATE} {d.description}")
+    for c in s.candidates:
+        if c.status == "candidate":
+            out.append(f"{c.id}: ask the client whether the document's {c.field} ('{c.value_text}') "
+                       f"matches what they remember")
     for q in ([s.pending] if s.pending else []) + s.queue:
         if q.kind == "clarify":
             out.append(f"Not yet asked: {q.text} ({q.fact_id})")
@@ -200,6 +263,8 @@ def requested_outcomes(s: "InterviewSession") -> list[dict]:
 def handoff_summary(s: "InterviewSession") -> str:
     by_src: dict[str, int] = {}
     for f in s.facts:
+        if f.status != FactStatus.CURRENT:
+            continue
         by_src[SOURCE_LABEL[f.source]] = by_src.get(SOURCE_LABEL[f.source], 0) + 1
     unresolved = [d for d in s.discrepancies if d.status == "unresolved"]
     unreviewed = [r for r in s.records if r.review_status == ReviewStatus.UNREVIEWED]
@@ -208,12 +273,19 @@ def handoff_summary(s: "InterviewSession") -> str:
         f"Transcript status: {s.transcript_status.value}",
         f"Sections completed: {', '.join(x for x in s.completed_sections) or 'none'}; "
         f"current: {s.current_section or '-'}; session {s.status.value}",
-        f"Facts recorded: {len(s.facts)} ({', '.join(f'{k} {v}' for k, v in sorted(by_src.items())) or 'none'})",
+        f"Current facts: {sum(by_src.values())}, superseded by correction: "
+        f"{sum(1 for f in s.facts if f.status != FactStatus.CURRENT)} ({', '.join(f'{k} {v}' for k, v in sorted(by_src.items())) or 'none'})",
         f"Hedged or unsure statements: {sum(1 for f in s.facts if f.certainty != Certainty.STATED)}",
         f"Unresolved discrepancies: {len(unresolved)}",
         f"Records mentioned or uploaded: {len(s.records)} ({len(unreviewed)} not yet reviewed - "
         f"potential supporting records only)",
         f"Requested outcomes (kept separate): {len(s.outcomes)}",
+        f"Interviewee corrections: {sum(1 for c in s.corrections if c.status == 'applied')} applied, "
+        f"{sum(1 for c in s.corrections if c.status != 'applied')} awaiting an item (all originals kept)",
+        f"Skipped or 'not sure' answers: {sum(1 for t in s.turns if t.control in ('skip', 'not_sure'))}",
+        f"Document-derived candidates awaiting client confirmation: "
+        f"{sum(1 for c in s.candidates if c.status == 'candidate')}",
+        f"Intake items (administrative): {', '.join(i.key for i in s.intake) or 'none'}",
         "Downstream stages must preserve provenance and uncertainty and must not rewrite "
         "uncertain statements into definite allegations.",
     ])

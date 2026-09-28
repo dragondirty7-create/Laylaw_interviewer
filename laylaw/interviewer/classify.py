@@ -161,3 +161,113 @@ def parse_date(text: Optional[str]) -> Optional[DateValue]:
         return DateValue(raw, DatePrecision.MONTH_ONLY, year=y, month=m)
     return DateValue(raw, DatePrecision.SEASON_YEAR, year=y,
                      qualifier=season.group(0) if season else None)
+
+
+# ---------------------------------------------------------------------------
+# Interview controls. Matched only when the WHOLE answer is the command, so a
+# sentence that merely contains "skip" is never treated as a control.
+# ---------------------------------------------------------------------------
+_CONTROL_PATTERNS = {
+    "save_later": r"(?:save(?: it)?(?: and| &)? (?:finish|continue|come back)(?: (?:it|this))? later"
+                  r"|save and exit|let'?s stop (?:here|for now)(?: and continue later)?|pause (?:here|for now)"
+                  r"|finish later)",
+    "skip": r"(?:skip(?: (?:this|that|it|this one|this question))?|pass|next question"
+            r"|i'?d rather not (?:say|answer)|prefer not to (?:say|answer))",
+    "not_sure": r"(?:not sure|i'?m not sure|i don'?t know|dunno|i don'?t remember|i can'?t remember"
+                r"|no idea|unsure|i'?m unsure|don'?t know)",
+}
+
+
+def detect_control(text: str) -> Optional[str]:
+    t = re.sub(r"[.!]+$", "", text.strip().lower())
+    for name, pattern in _CONTROL_PATTERNS.items():
+        if re.fullmatch(pattern, t):
+            return name
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Proposition spans. Splitting never rewrites words: each proposition is an
+# exact [start, end) slice of the interviewee's own answer.
+# ---------------------------------------------------------------------------
+_ABBREV = r"(?:Mr|Mrs|Ms|Dr|Jr|Sr|St|vs|etc|No|approx|e\.g|i\.e)"
+
+
+def proposition_spans(text: str) -> list[tuple[int, int]]:
+    """Split an answer into sentence-level spans (verbatim slices).
+    A deterministic suggestion only -- callers may pass their own spans."""
+    spans, start = [], 0
+    for m in re.finditer(r"[.!?]+[\"')\]]?(?=\s+[A-Z0-9\"'(])", text):
+        end = m.end()
+        before = text[max(0, m.start() - 6):m.start() + 1]
+        if re.search(rf"\b{_ABBREV}\.$", before):
+            continue
+        if text[start:end].strip():
+            spans.append((start, end))
+        start = end
+    if text[start:].strip():
+        spans.append((start, len(text)))
+    # trim whitespace inside each span
+    out = []
+    for a, b in spans:
+        while a < b and text[a].isspace():
+            a += 1
+        while b > a and text[b - 1].isspace():
+            b -= 1
+        if a < b:
+            out.append((a, b))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Supporting-source typing for the record hook.
+# ---------------------------------------------------------------------------
+from .models import SupportingSourceType  # noqa: E402
+
+_SUPPORT_PATTERNS = [
+    (SupportingSourceType.COURT_RECORD,
+     r"\b(?:court (?:record|file|filing|order|docket|paperwork|papers|minutes)s?|docket|minute order|"
+     r"filing|filed|case file|court)\b"),
+    (SupportingSourceType.EMAIL_TEXT,
+     r"\b(?:e-?mails?|texts?|text messages?|texted|messages?|dms?|whatsapp|imessage|voicemails?|chat logs?)\b"),
+    (SupportingSourceType.WITNESS,
+     r"\b(?:witness(?:es)?|saw (?:it|that|what happened|everything)|was there|were there|can (?:tell|confirm|back)|"
+     r"(?:my|a|the|our) (?:neighbou?r|friend|coworker|co-worker|mom|mother|dad|father|sister|brother|"
+     r"aunt|uncle|cousin|teacher|coach|boss|roommate|babysitter|nanny|grandma|grandmother|grandpa|grandfather)\b"
+     r"(?! (?:sent|texted|emailed)))"),
+    (SupportingSourceType.DOCUMENT_FILE,
+     r"\b(?:documents?|files?|pdfs?|receipts?|letters?|reports?|records?|photos?|pictures?|videos?|screenshots?|"
+     r"calendar(?: entr(?:y|ies))?|invoices?|statements?|forms?|paperwork|notes?|logs?)\b"),
+]
+
+
+def classify_supporting_source(text: str) -> SupportingSourceType:
+    for kind, pattern in _SUPPORT_PATTERNS:
+        if re.search(pattern, text, flags=re.IGNORECASE):
+            return kind
+    return SupportingSourceType.OTHER
+
+
+# ---------------------------------------------------------------------------
+# Date phrases inside a longer sentence. Returns the interviewee's own words
+# (a verbatim substring) or None. Only clear date expressions are picked up.
+# ---------------------------------------------------------------------------
+_QUAL = r"(?:(?:around|about|roughly|approximately|maybe|probably|early|mid|late|sometime in|some time in|in|on)\s+)?"
+_DATE_PHRASES = [
+    rf"{_QUAL}(?:{MONTH_RE})\s+\d{{1,2}}(?:st|nd|rd|th)?,?\s+(?:19|20)\d{{2}}",
+    rf"{_QUAL}(?:early |mid |late )?(?:{MONTH_RE}),?\s+(?:19|20)\d{{2}}",
+    rf"{_QUAL}\d{{4}}-\d{{2}}-\d{{2}}",
+    rf"{_QUAL}\d{{1,2}}/\d{{1,2}}/\d{{4}}",
+    rf"{_QUAL}(?:{SEASONS})\s+(?:of\s+)?(?:19|20)\d{{2}}",
+    rf"{_QUAL}(?:a|one|two|three|four|five|six|seven|eight|nine|ten|a few|several|\d+)\s+(?:days?|weeks?|months?|years?)\s+ago",
+    r"(?:last|this)\s+(?:week|month|year|spring|summer|fall|autumn|winter)",
+    r"yesterday",
+]
+
+
+def find_date_phrase(text: str) -> Optional[str]:
+    for p in _DATE_PHRASES:
+        m = re.search(rf"\b{p}\b", text, flags=re.IGNORECASE)
+        if m:
+            return text[m.start():m.end()]
+    return None

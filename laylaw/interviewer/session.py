@@ -1,8 +1,8 @@
 """The Laylaw Interviewer session engine.
 
 Implements the canonical spec's INTERVIEW stage:
-  orientation -> free account per section -> one-at-a-time clarification ->
-  record hook -> end-of-section check -> (next section) -> final check.
+  [preflight intake] -> orientation -> free account per section -> one-at-a-time
+  clarification -> record hook -> end-of-section check -> (next section) -> final check.
 
 The engine records; it never supplies facts, upgrades certainty, picks between
 conflicting recollections, or produces advocacy. Downstream stages (ORGANIZE,
@@ -19,14 +19,17 @@ from typing import Any, Optional
 from . import classify
 from .guard import ModeViolation, assert_no_advocacy
 from .models import (
-    Certainty, DateValue, DatePrecision, Discrepancy, DocumentFinding, EventKind, Fact, Mode,
-    Provenance, ProvenanceType, RequestedOutcome, ReviewStatus, SessionStatus,
-    SourceOfKnowledge, SupportingRecord, TranscriptStatus, Turn, VerificationStatus, to_jsonable,
+    SUPPORTING_TO_PROVENANCE, Certainty, Correction, DateValue, DatePrecision, Discrepancy,
+    DocumentCandidate, DocumentFinding, EventKind, Fact, FactStatus, IntakeItem, Mode, Provenance,
+    ProvenanceType, RawAnswer, RequestedOutcome, ReviewStatus, SessionStatus, SourceOfKnowledge,
+    SupportingRecord, SupportingSourceType, TranscriptStatus, Turn, VerificationStatus, to_jsonable,
 )
+from .paths import PATHS, PREFLIGHT_QUESTIONS, spec_for, validate_sections
 
 ORIENTATION_TEXT = (
     "I'll ask about what you remember. It's completely okay to say you don't know, "
-    "don't remember, or aren't sure. I won't fill in missing details for you."
+    "don't remember, or aren't sure. I won't fill in missing details for you. "
+    "You can also say \"skip\", \"not sure\", or \"save and finish later\" at any point."
 )
 END_OF_SECTION_QUESTIONS = [
     "Did I get anything wrong?",
@@ -39,6 +42,8 @@ FINAL_CHECK_QUESTIONS = [
     "Did I make anything sound more definite than you remember it?",
     "What should we follow up on next?",
 ]
+# Final-check questions whose non-empty answers are corrections to the record.
+_FINAL_CORRECTION_INDEXES = {1, 2}
 RECORD_HOOK_QUESTION = "Is there anything that might help document or date this?"
 SAFETY_QUESTION = (
     "Before we go on: are you safe right now? If you or anyone else is in immediate danger, "
@@ -46,8 +51,7 @@ SAFETY_QUESTION = (
     "we can come back to this later."
 )
 CERTAINTY_QUESTION = "Which part are you certain about, and which part are you unsure about?"
-
-_CERTAINTY_RANK = {Certainty.UNSURE: 0, Certainty.HEDGED: 1, Certainty.STATED: 2}
+SAVED_FOR_LATER = "Saved. When you come back, we'll pick up at the same question."
 
 
 def _now() -> str:
@@ -58,13 +62,25 @@ def _slug(name: str) -> str:
     return re.sub(r"[^A-Z0-9]+", "-", name.upper()).strip("-") or "UNKNOWN"
 
 
+def _norm(text: Optional[str]) -> str:
+    t = re.sub(r"[^a-z0-9 ]+", " ", (text or "").lower())
+    t = re.sub(r"\b(?:the|a|an|at|in|on|by)\b", " ", t)
+    return re.sub(r"\s+", " ", t).strip()
+
+
 class AdultInterviewOnly(ValueError):
     """The interviewer interviews adults only; never a child forensic interview."""
 
 
+class ProvenanceError(ValueError):
+    """Raised when text that is not the interviewee's own words is offered as their statement."""
+
+
 @dataclass
 class PendingQuestion:
-    kind: str                       # free_account | clarify | record_hook | recap | final | safety
+    # preflight | free_account | clarify | procedural | record_hook | recap | final |
+    # correction_target | safety
+    kind: str
     text: str
     fact_id: Optional[str] = None
     field: Optional[str] = None
@@ -92,13 +108,17 @@ class InterviewSession:
     pending: Optional[PendingQuestion] = None
     last_question_answered: Optional[str] = None
     turns: list[Turn] = field(default_factory=list)
+    raw_answers: list[RawAnswer] = field(default_factory=list)
     facts: list[Fact] = field(default_factory=list)
     outcomes: list[RequestedOutcome] = field(default_factory=list)
     records: list[SupportingRecord] = field(default_factory=list)
     findings: list[DocumentFinding] = field(default_factory=list)
+    candidates: list[DocumentCandidate] = field(default_factory=list)
     discrepancies: list[Discrepancy] = field(default_factory=list)
+    corrections: list[Correction] = field(default_factory=list)
+    intake: list[IntakeItem] = field(default_factory=list)
+    sequence_links: list[dict] = field(default_factory=list)
     open_questions: list[str] = field(default_factory=list)
-    corrections: list[str] = field(default_factory=list)
     safety_notes: list[str] = field(default_factory=list)
     oriented: bool = False
     final_check_started: bool = False
@@ -109,7 +129,7 @@ class InterviewSession:
     def start(cls, workspace, *, case_id: str, interviewee: str, interviewer: str,
               purpose: str, sections: list[str], interviewee_is_adult: bool,
               transcript_status: TranscriptStatus = TranscriptStatus.STRUCTURED_NOTES,
-              path_name: str = "general") -> "InterviewSession":
+              path_name: str = "general", preflight: Optional[list[str]] = None) -> "InterviewSession":
         if not interviewee_is_adult:
             raise AdultInterviewOnly(
                 "Laylaw Interviewer interviews adults only and does not conduct forensic "
@@ -119,6 +139,9 @@ class InterviewSession:
                 purpose=purpose, sections=list(sections), transcript_status=transcript_status,
                 path_name=path_name)
         s.workspace = workspace
+        if preflight:
+            s.current_section = "Intake"
+            s.queue = [PendingQuestion("preflight", PREFLIGHT_QUESTIONS[k], field=k) for k in preflight]
         s.save()
         return s
 
@@ -130,7 +153,7 @@ class InterviewSession:
 
     def to_dict(self) -> dict:
         d = {k: to_jsonable(getattr(self, k)) for k in self.__dataclass_fields__ if k != "workspace"}
-        d["schema"] = "laylaw.interviewer.session/1"
+        d["schema"] = "laylaw.interviewer.session/2"
         return d
 
     @classmethod
@@ -142,17 +165,29 @@ class InterviewSession:
             return Provenance(**{**x, "type": ProvenanceType(x["type"])})
 
         def fact(x):
+            x = dict(x)
+            if "status" in x and x["status"] is not None:
+                x["status"] = FactStatus(x["status"])
             return Fact(**{**x, "source": SourceOfKnowledge(x["source"]),
                            "certainty": Certainty(x["certainty"]), "provenance": prov(x["provenance"]),
                            "date": dv(x["date"]), "kind": EventKind(x["kind"]),
                            "verification": VerificationStatus(x["verification"])})
 
         def rec(x):
+            x = dict(x)
+            if x.get("source_type") is not None:
+                x["source_type"] = SupportingSourceType(x["source_type"])
             return SupportingRecord(**{**x, "provenance_type": ProvenanceType(x["provenance_type"]),
                                        "review_status": ReviewStatus(x["review_status"])})
 
+        def corr(x):
+            if isinstance(x, str):  # schema/1 stored corrections as plain strings
+                return Correction(id="C-legacy", raw_text=x, via="legacy",
+                                  provenance=Provenance(ProvenanceType.INTERVIEW, "INTERVIEW:LEGACY"))
+            return Correction(**{**x, "provenance": prov(x["provenance"])})
+
         pq = lambda x: None if x is None else PendingQuestion(**x)  # noqa: E731
-        s = cls(
+        return cls(
             interview_id=d["interview_id"], case_id=d["case_id"], client_id=d["client_id"],
             interviewee=d["interviewee"], interviewer=d["interviewer"], purpose=d["purpose"],
             sections=d["sections"], date_started=d["date_started"], last_updated=d["last_updated"],
@@ -161,17 +196,22 @@ class InterviewSession:
             path_name=d["path_name"], current_section=d["current_section"],
             completed_sections=d["completed_sections"], queue=[pq(q) for q in d["queue"]],
             pending=pq(d["pending"]), last_question_answered=d["last_question_answered"],
-            turns=[Turn(**t) for t in d["turns"]], facts=[fact(f) for f in d["facts"]],
+            turns=[Turn(**t) for t in d["turns"]],
+            raw_answers=[RawAnswer(**r) for r in d.get("raw_answers", [])],
+            facts=[fact(f) for f in d["facts"]],
             outcomes=[RequestedOutcome(**{**o, "provenance": prov(o["provenance"])}) for o in d["outcomes"]],
             records=[rec(r) for r in d["records"]],
             findings=[DocumentFinding(**{**f, "provenance": prov(f["provenance"]), "date": dv(f["date"])})
                       for f in d["findings"]],
+            candidates=[DocumentCandidate(**{**c, "provenance": prov(c["provenance"])})
+                        for c in d.get("candidates", [])],
             discrepancies=[Discrepancy(**x) for x in d["discrepancies"]],
-            open_questions=d["open_questions"], corrections=d["corrections"],
-            safety_notes=d["safety_notes"], oriented=d["oriented"],
+            corrections=[corr(c) for c in d.get("corrections", [])],
+            intake=[IntakeItem(**{**i, "provenance": prov(i["provenance"])}) for i in d.get("intake", [])],
+            sequence_links=d.get("sequence_links", []),
+            open_questions=d["open_questions"], safety_notes=d["safety_notes"], oriented=d["oriented"],
             final_check_started=d["final_check_started"],
         )
-        return s
 
     # ----------------------------------------------------------- interrupt/resume
     def interrupt(self) -> None:
@@ -179,6 +219,14 @@ class InterviewSession:
         if self.status == SessionStatus.ACTIVE:
             self.status = SessionStatus.PAUSED
         self.save()
+
+    def save_and_finish_later(self) -> str:
+        """Engine-level control. Keeps the exact pending question as the resume point."""
+        self.turns.append(Turn(len(self.turns), self.current_section or "",
+                               self.pending.text if self.pending else None, "save and finish later",
+                               control="save_later"))
+        self.interrupt()
+        return SAVED_FOR_LATER
 
     def resume_prompt(self) -> str:
         topic = self.current_section or (self.sections[0] if self.sections else "the beginning")
@@ -194,9 +242,10 @@ class InterviewSession:
         return self.resume_prompt()
 
     def _last_covered_summary(self) -> str:
-        if not self.facts:
-            return "the introduction"
-        f = self.facts[-1]
+        current = [f for f in self.facts if f.status == FactStatus.CURRENT]
+        if not current:
+            return "the introduction" if not self.intake else "the intake questions"
+        f = current[-1]
         return f"{f.topic}: the account recorded as fact {f.id}"
 
     # ----------------------------------------------------------- provenance
@@ -204,6 +253,22 @@ class InterviewSession:
         day = self.date_started[:10]
         return Provenance(ProvenanceType.INTERVIEW, f"INTERVIEW:{_slug(self.interviewee)}:{day}",
                           session_id=self.interview_id, turn_index=turn_index)
+
+    # ----------------------------------------------------------- sections
+    def add_section(self, section: str) -> None:
+        """Adaptive: add a section from the path's canonical set mid-interview."""
+        if self.path_name in PATHS:
+            validate_sections(self.path_name, [section])
+        if section not in self.sections:
+            self.sections.append(section)
+            self.save()
+
+    def remove_section(self, section: str) -> None:
+        if section in self.completed_sections or section == self.current_section:
+            raise ValueError("a section already covered or in progress stays on the record")
+        if section in self.sections:
+            self.sections.remove(section)
+            self.save()
 
     # ----------------------------------------------------------- questioning
     def _emit(self, text: str) -> str:
@@ -216,6 +281,8 @@ class InterviewSession:
             return self._emit(SAFETY_QUESTION)
         if self.status == SessionStatus.CLOSED:
             return None
+        if self.status == SessionStatus.PAUSED:
+            self.status = SessionStatus.ACTIVE
         if self.pending is None:
             self.pending = self._advance()
         self.save()
@@ -242,17 +309,24 @@ class InterviewSession:
         if not self.final_check_started:
             self.final_check_started = True
             self.current_section = "Final check"
-            self.queue = [PendingQuestion("final", q) for q in FINAL_CHECK_QUESTIONS[1:]]
-            return PendingQuestion("final", FINAL_CHECK_QUESTIONS[0])
+            self.queue = [PendingQuestion("final", q, field=str(i))
+                          for i, q in enumerate(FINAL_CHECK_QUESTIONS) if i > 0]
+            return PendingQuestion("final", FINAL_CHECK_QUESTIONS[0], field="0")
         self.status = SessionStatus.CLOSED
         return None
 
     @staticmethod
     def is_request_section(section: Optional[str]) -> bool:
-        return bool(section) and bool(re.search(r"(?i)request|going forward|would like", section))
+        if not section:
+            return False
+        return spec_for(section).kind == "request" or bool(
+            re.search(r"(?i)request|going forward|would like", section))
 
     @staticmethod
     def free_account_prompt(section: str) -> str:
+        spec = spec_for(section)
+        if spec.prompt:
+            return spec.prompt
         if InterviewSession.is_request_section(section):
             return "What would you like to happen going forward?"
         if re.search(r"(?i)routine", section):
@@ -260,52 +334,189 @@ class InterviewSession:
         return f"Tell me about {section.lower()}, from the beginning."
 
     # ----------------------------------------------------------- answering
-    def answer(self, text: str, **tags) -> None:
-        """Record the interviewee's answer to the pending question."""
+    def answer(self, text: str, **tags) -> Optional[str]:
+        """Record the interviewee's answer to the pending question.
+
+        Returns a short acknowledgement only for controls (e.g. save-for-later)."""
         q = self.pending
-        turn = Turn(len(self.turns), self.current_section or "", q.text if q else None, text)
+        control = tags.pop("control", None) or classify.detect_control(text)
+        if control == "save_later":
+            return self.save_and_finish_later()
+
+        turn = Turn(len(self.turns), self.current_section or "", q.text if q else None, text, control=control)
         self.turns.append(turn)
         self.last_question_answered = q.text if q else None
         self.pending = None
 
-        if classify.detect_present_safety_issue(text):
-            self.status = SessionStatus.PAUSED_FOR_SAFETY
-            self.safety_notes.append(f"turn {turn.index}: possible present danger described; "
-                                     f"ordinary interviewing paused")
-            if q:
-                self.queue.insert(0, q)  # come back to the same question afterwards
-            self.save()
-            return
+        if classify.detect_present_safety_issue(text) or (
+                q and q.kind == "preflight" and q.field == "urgent"
+                and re.match(r"(?i)\s*yes\b", text) and re.search(r"(?i)danger|hurt|unsafe|threat", text)):
+            self._pause_for_safety(q, turn.index)
+            return None
 
         kind = q.kind if q else "free_account"
-        if kind == "safety":
+        if control in ("skip", "not_sure"):
+            self._apply_control(control, q, turn.index)
+        elif kind == "safety":
             self.safety_notes.append(f"turn {turn.index}: safety check answered")
             if not tags.get("keep_paused"):
                 self.status = SessionStatus.ACTIVE
+        elif kind == "preflight":
+            self._record_intake(q, text, turn.index)
         elif kind == "free_account":
-            self._record_answer_as_fact_or_request(text, turn.index, **tags)
+            self._record_free_account(text, turn.index, **tags)
+        elif kind == "procedural":
+            self._record_procedural(q, text, turn.index, **tags)
         elif kind == "clarify":
             self._apply_clarification(q, text, turn.index, **tags)
         elif kind == "record_hook":
-            self._apply_record_hook(q, text)
+            self._apply_record_hook(q, text, source_type=tags.get("source_type"))
         elif kind == "recap":
-            self._apply_recap_answer(text, turn.index)
+            if not _is_no(text):
+                self._start_correction(text, "recap", turn.index,
+                                       [f.id for f in self._current_facts(self.current_section)])
+        elif kind == "correction_target":
+            self._resolve_correction_target(q, text)
         elif kind == "final":
-            if text.strip() and not re.fullmatch(r"(?i)\s*(no|nope|nothing|no,? that'?s it\.?)\s*", text):
-                self.open_questions.append(f"Final check - {q.text} -> {text}")
+            if not _is_no(text):
+                if int(q.field or 0) in _FINAL_CORRECTION_INDEXES:
+                    self._start_correction(text, "final_check", turn.index,
+                                           [f.id for f in self._current_facts()])
+                else:
+                    self.open_questions.append(f"Final check - {q.text} -> {text}")
+        self.save()
+        return None
+
+    def _pause_for_safety(self, q: Optional[PendingQuestion], turn_index: int) -> None:
+        self.status = SessionStatus.PAUSED_FOR_SAFETY
+        self.safety_notes.append(f"turn {turn_index}: possible present danger described; "
+                                 f"ordinary interviewing paused")
+        if q and not (q.kind == "preflight" and q.field == "urgent"):
+            self.queue.insert(0, q)  # come back to the same question afterwards
         self.save()
 
-    def _record_answer_as_fact_or_request(self, text: str, turn_index: int, **tags) -> None:
-        if self.is_request_section(self.current_section) and not tags.get("source"):
+    # ----------------------------------------------------------- controls
+    def skip(self) -> None:
+        self.answer("skip", control="skip")
+
+    def not_sure(self) -> None:
+        self.answer("not sure", control="not_sure")
+
+    def _apply_control(self, control: str, q: Optional[PendingQuestion], turn_index: int) -> None:
+        """Skip / not sure are recorded as what they are -- never as facts."""
+        label = "Skipped by interviewee" if control == "skip" else "Interviewee not sure / doesn't remember"
+        if q is None:
+            return
+        if q.kind == "preflight":
+            self.intake.append(IntakeItem(q.field, q.text, "", self._provenance(turn_index),
+                                          status="skipped" if control == "skip" else "not_sure"))
+            return
+        if q.kind in ("free_account", "procedural"):
+            self.open_questions.append(f"{label}: {q.text} ({self.current_section})")
+            return
+        if q.kind == "clarify" and q.fact_id:
+            fact = self.get_fact(q.fact_id)
+            if q.field == "date" and control == "not_sure":
+                fact.date = DateValue("not sure", DatePrecision.UNKNOWN)  # unknown, stated as such
+            if q.field == "discrepancy":
+                d = next((x for x in self.discrepancies if q.fact_id in x.fact_ids and x.status == "unresolved"),
+                         None)
+                if d:
+                    d.resolution_note = f"Interviewee: {'skipped' if control == 'skip' else 'not sure'}"
+            fact.open_questions.append(f"{label}: {q.text}")
+            return
+        if q.kind == "correction_target":
+            self.open_questions.append(f"Correction {q.field} not yet matched to an item ({label.lower()})")
+            return
+        if q.kind in ("recap", "final", "record_hook"):
+            self.open_questions.append(f"{label}: {q.text}")
+
+    # ----------------------------------------------------------- intake
+    def _record_intake(self, q: PendingQuestion, text: str, turn_index: int) -> None:
+        self.intake.append(IntakeItem(q.field, q.text, text, self._provenance(turn_index)))
+
+    def record_intake(self, key: str, answer: str) -> IntakeItem:
+        item = IntakeItem(key, PREFLIGHT_QUESTIONS.get(key, key), answer, self._provenance(None))
+        self.intake.append(item)
+        self.save()
+        return item
+
+    # ----------------------------------------------------------- free account / propositions
+    def _add_raw_answer(self, text: str, turn_index: int) -> RawAnswer:
+        raw = RawAnswer(f"A-{len(self.raw_answers) + 1:03d}", turn_index, self.current_section or "", text)
+        self.raw_answers.append(raw)
+        return raw
+
+    def _record_free_account(self, text: str, turn_index: int, **tags) -> None:
+        section = self.current_section or "general"
+        spec = spec_for(section)
+        if _is_nothing_more(text):
+            # "No" / "nothing" to an opening prompt is not a fact and not a request.
+            self.open_questions.append(f"Interviewee had nothing to add for: {section} (answer: \"{text}\")")
+            return
+        if spec.kind == "request" or (self.is_request_section(section) and not tags.get("source")):
             self.record_request(text, turn_index=turn_index)
             return
-        if re.search(r"(?i)routine", self.current_section or "") and "kind" not in tags:
-            tags["kind"] = EventKind.ROUTINE
-        if classify.is_request(text) and not tags.get("source"):
-            self.record_request(text, turn_index=turn_index)
+        if spec.kind == "records":
+            self._apply_record_hook(PendingQuestion("record_hook", "", None), text,
+                                    source_type=tags.get("source_type"))
             return
-        fact = self.record_fact(text, turn_index=turn_index, topic=self.current_section or "general", **tags)
-        self._queue_clarifications(fact)
+        if spec.kind == "routine" or re.search(r"(?i)routine", section):
+            tags.setdefault("kind", EventKind.ROUTINE)
+        if spec.default_source and "source" not in tags:
+            tags["source"] = spec.default_source
+        raw = self._add_raw_answer(text, turn_index)
+        facts = self._record_propositions(raw, spec_question=None if spec.kind != "procedural" else spec.prompt,
+                                          **tags)
+        if spec.kind == "procedural":
+            self.queue = [q for q in self.queue if q.kind != "recap"] + [
+                PendingQuestion("procedural", question, facts[0].id if facts else None, field=key)
+                for key, question in spec.followups] + self._recap_questions()
+            return
+        for f in facts:
+            self._queue_clarifications(f)
+
+    def _record_propositions(self, raw: RawAnswer, spans: Optional[list[tuple[int, int]]] = None,
+                             spec_question: Optional[str] = None, **tags) -> list[Fact]:
+        """One raw answer -> one or more propositions, each a verbatim slice."""
+        spans = spans or classify.proposition_spans(raw.text) or [(0, len(raw.text))]
+        facts = []
+        for a, b in spans:
+            piece = raw.text[a:b]
+            if classify.is_request(piece) and not tags.get("source"):
+                self.record_request(piece, turn_index=raw.turn_index)
+                continue
+            facts.append(self.record_fact(piece, topic=raw.section or "general", turn_index=raw.turn_index,
+                                          raw_answer_id=raw.id, span=[a, b],
+                                          question_context=spec_question, **tags))
+        return facts
+
+    def record_proposition(self, raw_answer_id: str, start: int, end: int, **tags) -> Fact:
+        """Record a proposition from a slice of a stored raw answer. Only the
+        interviewee's own words can be recorded this way -- there is no API that
+        accepts generated text as the interviewee's statement."""
+        raw = next(r for r in self.raw_answers if r.id == raw_answer_id)
+        if not (0 <= start < end <= len(raw.text)):
+            raise ProvenanceError("span outside the stored answer")
+        return self.record_fact(raw.text[start:end], topic=raw.section or "general", turn_index=raw.turn_index,
+                                raw_answer_id=raw.id, span=[start, end], **tags)
+
+    def _record_procedural(self, q: PendingQuestion, text: str, turn_index: int, **tags) -> None:
+        if _is_no(text) and q.field != "basis":
+            return
+        raw = self._add_raw_answer(text, turn_index)
+        base = self.get_fact(q.fact_id) if q.fact_id else None
+        if q.field == "basis" and base is not None:
+            base.open_questions.append(f"Basis (interviewee's words): {text}")
+            return
+        spec = spec_for(self.current_section or "")
+        if spec.default_source and "source" not in tags:
+            tags["source"] = spec.default_source
+        f = self.record_fact(text, topic=raw.section, turn_index=turn_index, raw_answer_id=raw.id,
+                             span=[0, len(text)], question_context=q.text, **tags)
+        phrase = classify.find_date_phrase(text)
+        if phrase and f.date is None:
+            self.set_fact_date(f.id, phrase)
 
     def _queue_clarifications(self, fact: Fact) -> None:
         """One question at a time, open-ended, never suggesting an answer."""
@@ -331,59 +542,57 @@ class InterviewSession:
         qs.append(PendingQuestion("record_hook", RECORD_HOOK_QUESTION, fact.id))
         # End-of-section check comes after this fact's clarifications. The recap
         # text itself is built when asked, so it reflects everything recorded.
-        self.queue = [q for q in self.queue if q.kind != "recap"] + qs + [
-            PendingQuestion("recap", q_text, None, field=str(i))
-            for i, q_text in enumerate(END_OF_SECTION_QUESTIONS)]
+        self.queue = [q for q in self.queue if q.kind != "recap"] + qs + self._recap_questions()
+
+    @staticmethod
+    def _recap_questions() -> list[PendingQuestion]:
+        return [PendingQuestion("recap", q_text, None, field=str(i))
+                for i, q_text in enumerate(END_OF_SECTION_QUESTIONS)]
 
     def _apply_clarification(self, q: PendingQuestion, text: str, turn_index: int, **tags) -> None:
         fact = self.get_fact(q.fact_id)
         if q.field == "date":
             self.set_fact_date(fact.id, text)
         elif q.field == "people_present":
-            # Keep the interviewee's own words; never expand or guess names.
-            if re.search(r"(?i)\bi don'?t (?:know|remember)\b|\bnot sure\b", text):
-                fact.open_questions.append(f"People present: interviewee said \"{text}\"")
-            elif re.fullmatch(r"(?i)\s*(?:no one|nobody|no one else|nobody else)\.?\s*", text):
-                fact.people_present.append("interviewee only (as stated)")
-            else:
-                cleaned = re.sub(r"(?i)^\s*just\s+", "", text.strip().rstrip("."))
-                parts = [n.strip() for n in re.split(r",|\band\b", cleaned) if n.strip()]
-                fact.people_present.extend("interviewee" if p.lower() in ("me", "i", "myself") else p
-                                           for p in parts)
+            self.set_people_present(fact.id, text, turn_index=turn_index)
         elif q.field == "location":
             if _is_nothing_more(text):
                 fact.open_questions.append(f"Location: interviewee said \"{text}\"")
             else:
-                fact.location = text.strip()
+                self.set_fact_location(fact.id, text, turn_index=turn_index)
         elif q.field == "source":
             src = tags.get("source") or classify.classify_source(text)
             self._set_source(fact, SourceOfKnowledge(src), basis_text=text)
         elif q.field == "certainty":
             fact.open_questions.append(f"Certainty clarification (interviewee's words): {text}")
+        elif q.field == "discrepancy":
+            d = next((x for x in self.discrepancies if fact.id in x.fact_ids and x.status == "unresolved"), None)
+            if d:
+                self.resolve_discrepancy(d.id, text)
         elif q.field == "next":
             if not _is_nothing_more(text):
-                nxt = self.record_fact(text, turn_index=turn_index, topic=fact.topic,
-                                       sequence_hint=f"after {fact.id}", **tags)
-                self._queue_clarifications(nxt)
+                raw = self._add_raw_answer(text, turn_index)
+                for nxt in self._record_propositions(raw, sequence_hint=f"after {fact.id}", **tags):
+                    self._queue_clarifications(nxt)
 
-    def _apply_record_hook(self, q: PendingQuestion, text: str) -> None:
-        if re.fullmatch(r"(?i)\s*(no|nope|nothing|not that i know of|i don'?t think so)\.?\s*", text):
+    # ----------------------------------------------------------- supporting sources
+    def _apply_record_hook(self, q, text: str, source_type: Optional[SupportingSourceType] = None) -> None:
+        if re.fullmatch(r"(?i)\s*(no|nope|nothing|none|not that i know of|i don'?t think so)\.?\s*", text):
             return
+        fact_id = getattr(q, "fact_id", None)
+        kind = SupportingSourceType(source_type) if source_type else classify.classify_supporting_source(text)
         rec = SupportingRecord(id="R-" + uuid.uuid4().hex[:10], client_id=self.client_id,
                                session_id=self.interview_id, label=f"Mentioned by interviewee: {text}",
-                               provenance_type=ProvenanceType.DOCUMENT,
-                               related_fact_ids=[q.fact_id] if q.fact_id else [])
+                               provenance_type=SUPPORTING_TO_PROVENANCE[kind], source_type=kind,
+                               related_fact_ids=[fact_id] if fact_id else [])
         self.records.append(rec)
-        if q.fact_id:
-            f = self.get_fact(q.fact_id)
+        if fact_id:
+            f = self.get_fact(fact_id)
             f.possible_records.append(rec.id)
             if f.verification == VerificationStatus.INTERVIEW_ONLY:
-                f.verification = VerificationStatus.DOCUMENT_LOCATED
-
-    def _apply_recap_answer(self, text: str, turn_index: int) -> None:
-        if re.fullmatch(r"(?i)\s*(no|nope|looks right|that'?s right|correct)\.?\s*", text):
-            return
-        self.corrections.append(f"turn {turn_index}: {text}")
+                f.verification = (VerificationStatus.WITNESS_IDENTIFIED if kind == SupportingSourceType.WITNESS
+                                  else VerificationStatus.DOCUMENT_LOCATED if kind != SupportingSourceType.OTHER
+                                  else VerificationStatus.INTERVIEW_ONLY)
 
     # ----------------------------------------------------------- direct recording API
     def record_fact(self, statement: str, *, topic: str, turn_index: Optional[int] = None,
@@ -392,9 +601,15 @@ class InterviewSession:
                     witnessed_underlying_event: bool = False, people_present: Optional[list[str]] = None,
                     location: Optional[str] = None, kind: EventKind = EventKind.UNSPECIFIED,
                     event_key: Optional[str] = None, exact_wording_remembered: bool = False,
-                    sequence_hint: Optional[str] = None, correction_of: Optional[str] = None) -> Fact:
+                    sequence_hint: Optional[str] = None, correction_of: Optional[str] = None,
+                    raw_answer_id: Optional[str] = None, span: Optional[list[int]] = None,
+                    question_context: Optional[str] = None) -> Fact:
         if self.mode != Mode.INTERVIEW:
             raise ModeViolation("facts are recorded only in INTERVIEW mode")
+        if raw_answer_id is not None:
+            raw = next((r for r in self.raw_answers if r.id == raw_answer_id), None)
+            if raw is None or span is None or raw.text[span[0]:span[1]] != statement:
+                raise ProvenanceError("statement is not a verbatim slice of the interviewee's answer")
         certainty, hedges = classify.classify_certainty(statement)
         detected = classify.classify_source(statement)
         if detected == SourceOfKnowledge.REQUEST and source is None:
@@ -406,12 +621,22 @@ class InterviewSession:
                     told_by_is_child=told_by_is_child,
                     witnessed_underlying_event=witnessed_underlying_event,
                     exact_wording_remembered=exact_wording_remembered,
-                    sequence_hint=sequence_hint, correction_of=correction_of)
+                    sequence_hint=sequence_hint, correction_of=correction_of,
+                    raw_answer_id=raw_answer_id, span=list(span) if span else None,
+                    question_context=question_context)
         fact.event_key = event_key or f"{topic}:{fact.id}"
-        self._set_source(fact, SourceOfKnowledge(source) if source else detected)
+        chosen = SourceOfKnowledge(source) if source else detected
+        # A secondhand phrase in the interviewee's own words always wins over a default.
+        if detected == SourceOfKnowledge.SECONDHAND:
+            chosen = SourceOfKnowledge.SECONDHAND
+        self._set_source(fact, chosen)
         self.facts.append(fact)
         if date_text is not None:
             self.set_fact_date(fact.id, date_text)
+        else:
+            phrase = classify.find_date_phrase(statement)
+            if phrase and raw_answer_id is not None:
+                self.set_fact_date(fact.id, phrase)
         self.save()
         return fact
 
@@ -428,12 +653,15 @@ class InterviewSession:
         if basis_text:
             fact.open_questions.append(f"Basis of knowledge (interviewee's words): {basis_text}")
 
+    # ----------------------------------------------------------- field setters (never overwrite)
     def set_fact_date(self, fact_id: str, date_text: str) -> DateValue:
         fact = self.get_fact(fact_id)
         dv = classify.parse_date(date_text)
-        if fact.certainty != Certainty.STATED and dv.precision == DatePrecision.EXACT:
-            # a hedged statement can't carry an exact date the speaker didn't commit to
-            dv.precision, dv.qualifier = DatePrecision.APPROXIMATE, "hedged statement"
+        if fact.certainty != Certainty.STATED and dv.precision in (
+                DatePrecision.EXACT, DatePrecision.MONTH_ONLY, DatePrecision.SEASON_YEAR) and dv.year is not None:
+            # The hedge ("I think...") covers the whole statement, including its date:
+            # never present a hedged statement's date as firmer than the statement.
+            dv.precision, dv.qualifier = DatePrecision.APPROXIMATE, dv.qualifier or "hedged statement"
         if fact.date is not None and not _dates_compatible(fact.date, dv):
             # A second, different recollection for the same fact: keep both.
             dup = self.record_fact(fact.statement, topic=fact.topic, source=fact.source,
@@ -442,41 +670,117 @@ class InterviewSession:
                                    event_key=fact.event_key,
                                    sequence_hint=f"second date recollection for the event in {fact.id}")
             dup.date = dv
-            self._check_date_conflicts(dup)
+            self._check_conflicts(dup)
             self.save()
             return dv
         fact.date = dv
-        self._check_date_conflicts(fact)
+        self._check_conflicts(fact)
         self.save()
         return dv
 
-    def _check_date_conflicts(self, fact: Fact) -> None:
+    def set_fact_location(self, fact_id: str, text: str, *, turn_index: Optional[int] = None) -> None:
+        fact = self.get_fact(fact_id)
+        if fact.location and _norm(fact.location) != _norm(text):
+            fact.alternate_recollections.append({"field": "location", "value": text, "turn": turn_index})
+            self._add_discrepancy("location", [fact.id], fact.location, text, fact)
+        elif not fact.location:
+            fact.location = text.strip()
+            self._check_conflicts(fact)
+        self.save()
+
+    def set_people_present(self, fact_id: str, text: str, *, turn_index: Optional[int] = None) -> None:
+        """Keep the interviewee's own words; never expand or guess names."""
+        fact = self.get_fact(fact_id)
+        if re.search(r"(?i)\bi don'?t (?:know|remember)\b|\bnot sure\b", text):
+            fact.open_questions.append(f"People present: interviewee said \"{text}\"")
+            return
+        if re.fullmatch(r"(?i)\s*(?:no one|nobody|no one else|nobody else)\.?\s*", text):
+            people = ["interviewee only (as stated)"]
+        else:
+            additive = bool(re.match(r"(?i)\s*(?:also|and also|plus)\b", text))
+            cleaned = re.sub(r"(?i)^\s*(?:just|also|and also|plus)\s+", "", text.strip().rstrip("."))
+            parts = [n.strip() for n in re.split(r",|\band\b", cleaned) if n.strip()]
+            people = ["interviewee" if p.lower() in ("me", "i", "myself") else p for p in parts]
+            if additive:
+                fact.people_present.extend(p for p in people if p not in fact.people_present)
+                self.save()
+                return
+        if fact.people_present and {_norm(p) for p in fact.people_present} != {_norm(p) for p in people}:
+            fact.alternate_recollections.append({"field": "people_present", "value": people, "turn": turn_index})
+            self._add_discrepancy("people_present", [fact.id], ", ".join(fact.people_present),
+                                  ", ".join(people), fact)
+        elif not fact.people_present:
+            fact.people_present.extend(people)
+            self._check_conflicts(fact)
+        self.save()
+
+    def record_sequence(self, first_id: str, relation: str, second_id: str) -> None:
+        """Record the interviewee's stated order of two events ("before"/"after")."""
+        if relation not in ("before", "after"):
+            raise ValueError("relation must be 'before' or 'after'")
+        a, b = (first_id, second_id) if relation == "before" else (second_id, first_id)
+        opposite = next((x for x in self.sequence_links if x["earlier"] == b and x["later"] == a), None)
+        self.sequence_links.append({"earlier": a, "later": b})
+        if opposite:
+            self._add_discrepancy("sequence", [a, b], f"{b} happened before {a}", f"{a} happened before {b}",
+                                  self.get_fact(a))
+        self.save()
+
+    def record_conflicting_account(self, fact_id: str, statement: str, *,
+                                   turn_index: Optional[int] = None) -> Fact:
+        """A materially different recollection of the same event. Both are kept;
+        the engine never decides which is more accurate or more favorable."""
+        orig = self.get_fact(fact_id)
+        alt = self.record_fact(statement, topic=orig.topic, turn_index=turn_index, event_key=orig.event_key,
+                               told_by=orig.told_by, told_by_is_child=orig.told_by_is_child,
+                               witnessed_underlying_event=orig.witnessed_underlying_event,
+                               sequence_hint=f"alternate recollection of {orig.id}")
+        self._add_discrepancy("account", [orig.id, alt.id], orig.statement, alt.statement, alt)
+        self.save()
+        return alt
+
+    def _check_conflicts(self, fact: Fact) -> None:
         for other in self.facts:
-            if other.id == fact.id or other.event_key != fact.event_key or other.date is None:
+            if other.id == fact.id or other.event_key != fact.event_key or other.status != FactStatus.CURRENT \
+                    or fact.status != FactStatus.CURRENT:
                 continue
-            if _dates_compatible(other.date, fact.date):
-                continue
-            ids = sorted({other.id, fact.id})
-            if any(sorted(d.fact_ids) == ids for d in self.discrepancies):
-                continue
-            self.discrepancies.append(Discrepancy(
-                id=f"D-{len(self.discrepancies) + 1:03d}", topic=fact.topic, fact_ids=ids, field="date",
-                description=(f'Recollection A ({other.id}): "{other.date.original_text}"; '
-                             f'Recollection B ({fact.id}): "{fact.date.original_text}"')))
-            for f in (other, fact):
-                f.verification = VerificationStatus.DISPUTED if f.verification in (
-                    VerificationStatus.INTERVIEW_ONLY, VerificationStatus.DISPUTED) else f.verification
-            self.queue.insert(0, PendingQuestion(
-                "clarify",
-                f'Earlier I wrote down "{other.date.original_text}". Just now you said '
-                f'"{fact.date.original_text}". Which is closer to what you remember now?',
-                fact.id, "discrepancy"))
+            if other.date is not None and fact.date is not None and not _dates_compatible(other.date, fact.date):
+                self._add_discrepancy("date", [other.id, fact.id], other.date.original_text,
+                                      fact.date.original_text, fact)
+            if other.location and fact.location and _norm(other.location) != _norm(fact.location):
+                self._add_discrepancy("location", [other.id, fact.id], other.location, fact.location, fact)
+            if other.people_present and fact.people_present and \
+                    {_norm(p) for p in other.people_present} != {_norm(p) for p in fact.people_present}:
+                self._add_discrepancy("people_present", [other.id, fact.id], ", ".join(other.people_present),
+                                      ", ".join(fact.people_present), fact)
+
+    def _add_discrepancy(self, field_name: str, fact_ids: list[str], earlier: str, later: str,
+                         ask_about: Fact) -> Optional[Discrepancy]:
+        ids = sorted(set(fact_ids))
+        description = f'Recollection A: "{earlier}"; Recollection B: "{later}"'
+        if any(d.field == field_name and sorted(d.fact_ids) == ids and d.description == description
+               for d in self.discrepancies):
+            return None
+        d = Discrepancy(id=f"D-{len(self.discrepancies) + 1:03d}", topic=ask_about.topic, fact_ids=ids,
+                        field=field_name, description=description)
+        self.discrepancies.append(d)
+        for fid in ids:
+            f = self.get_fact(fid)
+            if f.verification in (VerificationStatus.INTERVIEW_ONLY, VerificationStatus.DISPUTED):
+                f.verification = VerificationStatus.DISPUTED
+        self.queue.insert(0, PendingQuestion(
+            "clarify",
+            f'Earlier I wrote down "{earlier}". Just now you said "{later}". '
+            f"Which is closer to what you remember now?",
+            ask_about.id, "discrepancy"))
+        return d
 
     def resolve_discrepancy(self, discrepancy_id: str, interviewee_explanation: str) -> Discrepancy:
         """Only the interviewee's own explanation can resolve a discrepancy, and
         both original recollections are kept either way."""
         d = next(x for x in self.discrepancies if x.id == discrepancy_id)
-        if re.search(r"(?i)\b(?:don'?t know|not sure|can'?t say|either|both)\b", interviewee_explanation):
+        if re.search(r"(?i)\b(?:don'?t know|not sure|can'?t say|either|both|no idea)\b", interviewee_explanation) \
+                or classify.detect_control(interviewee_explanation):
             d.resolution_note = f"Interviewee could not resolve: {interviewee_explanation}"
             d.status = "unresolved"
         else:
@@ -495,14 +799,83 @@ class InterviewSession:
     def get_fact(self, fact_id: str) -> Fact:
         return next(f for f in self.facts if f.id == fact_id)
 
+    def _current_facts(self, section: Optional[str] = None) -> list[Fact]:
+        return [f for f in self.facts if f.status == FactStatus.CURRENT and (section is None or f.topic == section)]
+
+    # ----------------------------------------------------------- corrections
+    def _start_correction(self, text: str, via: str, turn_index: int, candidate_ids: list[str]) -> Correction:
+        corr = Correction(id=f"C-{len(self.corrections) + 1:03d}", raw_text=text, via=via,
+                          provenance=self._provenance(turn_index))
+        self.corrections.append(corr)
+        corr.candidate_ids = list(candidate_ids)
+        target = _explicit_target(text, candidate_ids)
+        if target is None and len(candidate_ids) == 1:
+            target = candidate_ids[0]
+        if target:
+            self._apply_correction(corr, target)
+        elif candidate_ids:
+            listing = "\n".join(f"{i}. {self.get_fact(fid).statement}" for i, fid in enumerate(candidate_ids, 1))
+            self.queue.insert(0, PendingQuestion(
+                "correction_target",
+                f"Here is what I have written down:\n{listing}\n\nWhich numbered item does that change?",
+                None, field=corr.id))
+            self.open_questions.append(f"Correction {corr.id} awaiting the item it applies to")
+        else:
+            self.open_questions.append(f"Correction {corr.id} could not be matched to a recorded item")
+        return corr
+
+    def _resolve_correction_target(self, q: PendingQuestion, text: str) -> None:
+        corr = next(c for c in self.corrections if c.id == q.field)
+        cands = corr.candidate_ids or [f.id for f in self._current_facts()]
+        target = _explicit_target(text, cands, allow_bare_number=True)
+        if target:
+            self._apply_correction(corr, target)
+            self.open_questions = [o for o in self.open_questions if corr.id not in o]
+
+    def _apply_correction(self, corr: Correction, target_id: str) -> Fact:
+        new = self.correct_fact(target_id, corr.raw_text, via=corr.via, turn_index=corr.provenance.turn_index,
+                                _correction=corr)
+        return new
+
+    def correct_fact(self, fact_id: str, corrected_statement: str, *, via: str = "direct",
+                     turn_index: Optional[int] = None, date_text: Optional[str] = None,
+                     location: Optional[str] = None, people_present: Optional[list[str]] = None,
+                     _correction: Optional[Correction] = None) -> Fact:
+        """Create a corrected version linked to the original. The original is
+        kept, marked superseded, and never edited or deleted."""
+        orig = self.get_fact(fact_id)
+        if orig.status == FactStatus.SUPERSEDED:
+            raise ValueError(f"{fact_id} was already corrected by {orig.superseded_by}; correct that version")
+        detected = classify.classify_source(corrected_statement)
+        source = orig.source if detected == SourceOfKnowledge.REQUEST else detected
+        if date_text is None:
+            date_text = classify.find_date_phrase(corrected_statement)  # interviewee's own words only
+        new = self.record_fact(corrected_statement, topic=orig.topic, turn_index=turn_index, source=source,
+                               told_by=orig.told_by, told_by_is_child=orig.told_by_is_child,
+                               witnessed_underlying_event=orig.witnessed_underlying_event, kind=orig.kind,
+                               event_key=orig.event_key, correction_of=orig.id, date_text=date_text,
+                               location=location, people_present=people_present)
+        orig.status = FactStatus.SUPERSEDED
+        orig.superseded_by = new.id
+        corr = _correction or Correction(id=f"C-{len(self.corrections) + 1:03d}", raw_text=corrected_statement,
+                                         via=via, provenance=self._provenance(turn_index))
+        if _correction is None:
+            self.corrections.append(corr)
+        corr.target_fact_id, corr.new_fact_id, corr.status = orig.id, new.id, "applied"
+        self.save()
+        return new
+
     # ----------------------------------------------------------- records & documents
     def add_upload(self, filename: str, data: bytes, *, label: Optional[str] = None,
                    related_fact_ids: Optional[list[str]] = None,
-                   provenance_type: ProvenanceType = ProvenanceType.DOCUMENT) -> SupportingRecord:
+                   provenance_type: ProvenanceType = ProvenanceType.DOCUMENT,
+                   source_type: Optional[SupportingSourceType] = None) -> SupportingRecord:
         """Uploads can arrive at any point in the interview; each stays attached to
         this client and this session."""
         rec = self.workspace.store_upload(self.interview_id, filename, data, label=label,
                                           provenance_type=provenance_type)
+        if source_type is not None:
+            rec.source_type = SupportingSourceType(source_type)
         rec.related_fact_ids = list(related_fact_ids or [])
         self.records.append(rec)
         for fid in rec.related_fact_ids:
@@ -540,10 +913,9 @@ class InterviewSession:
                 consistency = "different"
                 note = (f'Recollection: "{fact.date.original_text}"; '
                         f'document: "{dv.original_text}"')
-        label = f"DOCUMENT:{_slug(rec.label)}" + (f":PAGE-{page}" if page else "")
         finding = DocumentFinding(id=f"DF-{len(self.findings) + 1:03d}", fact_id=fact_id,
                                   record_id=record_id, content=content,
-                                  provenance=Provenance(ProvenanceType.DOCUMENT, label, record_id=record_id),
+                                  provenance=self._doc_provenance(rec, page),
                                   date=dv, consistency=consistency, difference_note=note)
         self.findings.append(finding)
         if record_id not in fact.possible_records:
@@ -557,11 +929,53 @@ class InterviewSession:
         self.save()
         return finding
 
+    def _doc_provenance(self, rec: SupportingRecord, page: Optional[str]) -> Provenance:
+        prefix = {SupportingSourceType.EMAIL_TEXT: "EMAIL-TEXT",
+                  SupportingSourceType.COURT_RECORD: "COURT-RECORD"}.get(rec.source_type, "DOCUMENT")
+        label = f"{prefix}:{_slug(rec.label)}" + (f":PAGE-{page}" if page else "")
+        return Provenance(rec.provenance_type, label, record_id=rec.id)
+
+    # document-derived candidates ------------------------------------------------
+    def propose_document_candidate(self, record_id: str, field_name: str, value_text: str, *,
+                                   fact_id: Optional[str] = None, page: Optional[str] = None) -> DocumentCandidate:
+        """A date/detail read from a document (by a person or an extractor). It is
+        never merged into the recollection; it waits for the client to confirm or correct it."""
+        rec = next(r for r in self.records if r.id == record_id)
+        cand = DocumentCandidate(id=f"DC-{len(self.candidates) + 1:03d}", record_id=record_id,
+                                 field=field_name, value_text=value_text,
+                                 provenance=self._doc_provenance(rec, page), fact_id=fact_id)
+        self.candidates.append(cand)
+        self.save()
+        return cand
+
+    def respond_to_candidate(self, candidate_id: str, client_words: str, decision: str, *,
+                             corrected_value: Optional[str] = None,
+                             turn_index: Optional[int] = None) -> DocumentCandidate:
+        """decision: 'confirm' | 'correct' | 'reject'. Confirming or correcting
+        creates a new, linked fact version in the client's own words; the original
+        recollection stays on the record."""
+        cand = next(c for c in self.candidates if c.id == candidate_id)
+        if decision not in ("confirm", "correct", "reject"):
+            raise ValueError("decision must be confirm, correct, or reject")
+        cand.client_response = client_words
+        if decision == "reject":
+            cand.status = "rejected"
+        else:
+            cand.status = "confirmed" if decision == "confirm" else "corrected"
+            value = cand.value_text if decision == "confirm" else (corrected_value or client_words)
+            if cand.fact_id:
+                new = self.correct_fact(cand.fact_id, client_words, via="document_candidate",
+                                        turn_index=turn_index,
+                                        date_text=value if cand.field == "date" else None)
+                cand.resulting_fact_id = new.id
+        self.save()
+        return cand
+
     # ----------------------------------------------------------- recaps
     def section_recap(self, section: Optional[str] = None, with_questions: bool = True) -> str:
         from .outputs import neutral_fact_line
         section = section or self.current_section
-        lines = [neutral_fact_line(f, self) for f in self.facts if f.topic == section]
+        lines = [neutral_fact_line(f, self) for f in self._current_facts(section)]
         body = "\n".join(f"- {ln}" for ln in lines) or "- (nothing recorded yet)"
         text = f"Here's what I have for {section.lower()}:\n{body}"
         if with_questions:
@@ -583,10 +997,33 @@ class InterviewSession:
 _NOTHING_MORE = re.compile(
     r"(?i)\s*(?:no|nope|none|nothing(?: else)?(?: happened)?|that'?s (?:it|all)|not really|"
     r"i don'?t (?:know|remember)|n/?a)[.!]?\s*")
+_NO = re.compile(r"(?i)\s*(?:no|nope|none|nothing|no,? that'?s (?:it|all|right)|looks (?:right|good)|"
+                 r"that'?s (?:right|correct|it|all)|correct|all good|nothing else)[.!]?\s*")
 
 
 def _is_nothing_more(text: str) -> bool:
     return not text.strip() or bool(_NOTHING_MORE.fullmatch(text))
+
+
+def _is_no(text: str) -> bool:
+    return not text.strip() or bool(_NO.fullmatch(text))
+
+
+def _explicit_target(text: str, candidate_ids: list[str], allow_bare_number: bool = False) -> Optional[str]:
+    """Only an explicit reference picks a target ("item 2", "#2", "F-002"). A
+    number inside a correction ("3 people were there") is never read as an item."""
+    m = re.search(r"\bF-\d{3}\b", text)
+    if m and m.group(0) in candidate_ids:
+        return m.group(0)
+    if allow_bare_number:
+        m = re.fullmatch(r"\s*(?:item|number|no\.?|#)?\s*(\d{1,3})\s*[.!]?\s*", text, flags=re.I)
+    else:
+        m = re.search(r"(?i)(?:\bitem|\bnumber|#)\s*(\d{1,3})\b", text)
+    if m:
+        n = int(m.group(1))
+        if 1 <= n <= len(candidate_ids):
+            return candidate_ids[n - 1]
+    return None
 
 
 def _dates_compatible(a: DateValue, b: DateValue) -> bool:

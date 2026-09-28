@@ -21,11 +21,37 @@ laylaw/interviewer/
   outputs.py    the 7 outputs: Interview Record, Fact Table, Timeline, Evidence Follow-up,
                 Open Questions, Requested Outcomes, Handoff Summary
   workspace.py  isolated per-client workspaces, atomic saves, uploads
-  paths.py      family-law and criminal-defense question paths (same engine, same rules)
+  paths.py      section specs; family-law and criminal-defense paths (same engine, same rules);
+                adaptive section selection; intake/preflight questions
+  research_basis.py  Research Basis template/record (never read by the engine)
+laylaw/organize/
+  interface.py  read-only export + protocol for a future ORGANIZE stage (case packet lives there)
+docs/RESEARCH_BASIS.md  the Research Basis template
 tests/
-  test_required.py  the 11 tests required by the Claude Code handoff
-  test_extra.py     criminal-defense path, safety pause
+  test_required.py     the 11 tests required by the Claude Code handoff
+  test_repair_pass.py  corrections, controls, criminal path, preflight, propositions,
+                       discrepancies, source typing, sections, candidates, ORGANIZE, research
+  test_extra.py        criminal-path engine parity, safety pause
+.github/workflows/tests.yml  CI: full pytest suite on every push and PR
 ```
+
+## Interview controls
+
+At any question the interviewee can answer **"skip"**, **"not sure"** (or "I don't
+know"), or **"save and finish later"**. These are recorded as controls, never as
+facts. Save-and-finish-later keeps the exact pending question as the resume point.
+
+## Corrections
+
+Recap and final-check corrections never edit the original. The engine creates
+a new fact version in the interviewee's words, linked by `correction_of` and
+`superseded_by`, and every output shows both versions.
+
+## Security status
+
+**Not production-ready for real client data.** There is no encryption at rest
+and no authentication; directory isolation is not a multi-user security
+boundary. See [SECURITY.md](SECURITY.md).
 
 ## Run
 

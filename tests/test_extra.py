@@ -9,7 +9,7 @@ def test_criminal_defense_path_uses_same_engine_and_rules(ws):
     s, notice = paths.start_path(
         "criminal_defense", ws, case_id="CASE-FICTIONAL-CD", interviewee="Jordan Avery",
         interviewer="Laylaw Interviewer", purpose="Synthetic test", interviewee_is_adult=True,
-        sections=["The events in question", "Open questions"])
+        sections=["Events in question (optional)", "Open questions"], preflight=False)
     # Notice says plainly there is NO privilege; never implies there is.
     assert "not protected by attorney-client privilege" in notice
     assert "does not create an attorney-client" in notice

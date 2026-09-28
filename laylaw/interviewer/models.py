@@ -58,6 +58,33 @@ class ProvenanceType(str, Enum):
     COURT_RECORD = "court_record"
 
 
+class SupportingSourceType(str, Enum):
+    """What kind of potential supporting source a mention or upload is.
+    A witness is a person, never a document."""
+
+    DOCUMENT_FILE = "document/file"
+    EMAIL_TEXT = "email/text"
+    COURT_RECORD = "court record"
+    WITNESS = "witness/person"
+    OTHER = "other potential supporting source"
+
+
+SUPPORTING_TO_PROVENANCE = {
+    SupportingSourceType.DOCUMENT_FILE: ProvenanceType.DOCUMENT,
+    SupportingSourceType.EMAIL_TEXT: ProvenanceType.EMAIL_TEXT,
+    SupportingSourceType.COURT_RECORD: ProvenanceType.COURT_RECORD,
+    # A witness or other source was *mentioned in the interview*; that mention is
+    # the only provenance we have until the person or source is actually contacted.
+    SupportingSourceType.WITNESS: ProvenanceType.INTERVIEW,
+    SupportingSourceType.OTHER: ProvenanceType.INTERVIEW,
+}
+
+
+class FactStatus(str, Enum):
+    CURRENT = "current"
+    SUPERSEDED = "superseded"      # corrected by the interviewee; kept, never deleted
+
+
 class ReviewStatus(str, Enum):
     UNREVIEWED = "unreviewed"
     REVIEWED = "reviewed"
@@ -165,7 +192,13 @@ class Fact:
     exact_wording_remembered: bool = False  # only then may it be quoted
     verification: "VerificationStatus" = None  # set in __post_init__
     correction_of: Optional[str] = None      # id of an earlier fact this corrects
+    superseded_by: Optional[str] = None      # id of the interviewee's correction, if any
+    status: "FactStatus" = None              # set in __post_init__
     event_key: Optional[str] = None          # facts describing the same event share a key
+    raw_answer_id: Optional[str] = None      # the verbatim answer this came from
+    span: Optional[list[int]] = None         # [start, end) of the statement inside that answer
+    question_context: Optional[str] = None   # the question this statement answered (procedural items)
+    alternate_recollections: list[dict] = field(default_factory=list)  # other versions, never merged
     sequence_hint: Optional[str] = None     # "before X", "after Y"
     possible_records: list[str] = field(default_factory=list)  # SupportingRecord ids
     open_questions: list[str] = field(default_factory=list)
@@ -175,6 +208,8 @@ class Fact:
             self.kind = EventKind.UNSPECIFIED
         if self.verification is None:
             self.verification = VerificationStatus.INTERVIEW_ONLY
+        if self.status is None:
+            self.status = FactStatus.CURRENT
 
 
 @dataclass
@@ -199,11 +234,24 @@ class SupportingRecord:
     stored_path: Optional[str] = None
     review_status: ReviewStatus = ReviewStatus.UNREVIEWED
     related_fact_ids: list[str] = field(default_factory=list)
+    source_type: "SupportingSourceType" = None  # set in __post_init__
+
+    def __post_init__(self):
+        if self.source_type is None:
+            self.source_type = {
+                ProvenanceType.EMAIL_TEXT: SupportingSourceType.EMAIL_TEXT,
+                ProvenanceType.COURT_RECORD: SupportingSourceType.COURT_RECORD,
+            }.get(self.provenance_type, SupportingSourceType.DOCUMENT_FILE)
 
     def describe(self) -> str:
+        kind = self.source_type.value
+        if self.source_type == SupportingSourceType.WITNESS:
+            if self.review_status == ReviewStatus.UNREVIEWED:
+                return f"POTENTIAL WITNESS ({kind}): {self.label} (not yet contacted)"
+            return f"WITNESS CONTACTED ({kind}): {self.label}"
         if self.review_status == ReviewStatus.UNREVIEWED:
-            return f"POTENTIAL SUPPORTING RECORD: {self.label} (not yet reviewed)"
-        return f"REVIEWED RECORD: {self.label}"
+            return f"POTENTIAL SUPPORTING RECORD ({kind}): {self.label} (not yet reviewed)"
+        return f"REVIEWED RECORD ({kind}): {self.label}"
 
 
 @dataclass
@@ -233,11 +281,64 @@ class Discrepancy:
 
 
 @dataclass
+class RawAnswer:
+    """An interviewee's answer exactly as given. Propositions point into it by span."""
+
+    id: str
+    turn_index: int
+    section: str
+    text: str
+
+
+@dataclass
+class Correction:
+    """A structured interviewee correction. The original fact is kept; the
+    correction becomes a new fact version linked with `correction_of`."""
+
+    id: str
+    raw_text: str
+    via: str                          # "recap" | "final_check" | "direct" | "document_candidate"
+    provenance: Provenance
+    target_fact_id: Optional[str] = None
+    new_fact_id: Optional[str] = None
+    status: str = "needs_target"      # "needs_target" | "applied" | "withdrawn"
+    candidate_ids: list[str] = field(default_factory=list)  # items offered when asking which one
+
+
+@dataclass
+class DocumentCandidate:
+    """A date/detail read from a document. It stays a candidate -- never part of
+    the interviewee's recollection -- until the client explicitly confirms or corrects it."""
+
+    id: str
+    record_id: str
+    field: str                        # "date" | "detail" | ...
+    value_text: str
+    provenance: Provenance
+    fact_id: Optional[str] = None
+    status: str = "candidate"         # "candidate" | "confirmed" | "corrected" | "rejected"
+    client_response: Optional[str] = None
+    resulting_fact_id: Optional[str] = None
+
+
+@dataclass
+class IntakeItem:
+    """Administrative intake/preflight answer. Kept apart from historical facts."""
+
+    key: str
+    question: str
+    answer: str
+    provenance: Provenance
+    status: str = "answered"          # "answered" | "skipped" | "not_sure"
+
+
+@dataclass
 class Turn:
     index: int
     section: str
     question: Optional[str]
     answer: str
+    control: Optional[str] = None     # "skip" | "not_sure" | "save_later" -- never a fact
 
 
 def to_jsonable(obj: Any) -> Any:
