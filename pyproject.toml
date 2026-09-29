@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "laylaw"
 version = "0.1.0"
@@ -6,7 +10,15 @@ requires-python = ">=3.10"
 dependencies = []
 
 [project.optional-dependencies]
-test = ["pytest>=7"]
+# Hardened single-user local mode (encrypted vault, OS credential store, local app)
+secure = ["cryptography>=42", "keyring>=24"]
+test = ["pytest>=7", "cryptography>=42", "keyring>=24"]
+
+[project.scripts]
+laylaw = "laylaw.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["laylaw*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

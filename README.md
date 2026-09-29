@@ -24,6 +24,17 @@ laylaw/interviewer/
   paths.py      section specs; family-law and criminal-defense paths (same engine, same rules);
                 adaptive section selection; intake/preflight questions
   research_basis.py  Research Basis template/record (never read by the engine)
+laylaw/secure/
+  vault.py      key hierarchy, access gate, recovery code, AES-GCM files bound to logical names
+  store.py      encrypted drop-in workspace store (sessions, uploads, deletion); export disabled
+  audit.py      HMAC-chained, content-free audit log
+  mode.py       real-data readiness gate and passphrase gate with lockout
+  secrets_store.py  OS credential store (keyring) with backend allowlist
+laylaw/app/
+  server.py     127.0.0.1-only local app (launch token, CSRF, Host/Origin checks, idle lock)
+  pages.py      no-JavaScript HTML pages
+laylaw/__main__.py  CLI: init, run, doctor, recover, change-passphrase, verify-audit, ...
+scripts/        double-click launchers for Windows and Mac
 laylaw/organize/
   interface.py  read-only export + protocol for a future ORGANIZE stage (case packet lives there)
 docs/RESEARCH_BASIS.md  the Research Basis template
@@ -63,18 +74,32 @@ stated basis ("They were using drugs.") is recorded as UNKNOWN and followed by
 
 ## Security status
 
-**Not production-ready for real client data.** There is no encryption at rest
-and no authentication; directory isolation is not a multi-user security
-boundary. See [SECURITY.md](SECURITY.md).
+* **Plaintext library (`WorkspaceStore`)**: synthetic/development data only. No
+  encryption, no authentication. Refused when `LAYLAW_MODE=real` or inside a vault.
+* **Hardened single-user local mode** (`python -m laylaw run`): encrypted vault,
+  passphrase + OS credential store access gate, content-free tamper-evident audit
+  log, deletion, local-only browser app. Awaiting Soul's security review; use
+  synthetic data until it passes.
+* **Public or multi-user use**: not approved and not built.
+
+See [SECURITY.md](SECURITY.md) and the setup/use walkthrough in
+[docs/LOCAL_MODE.md](docs/LOCAL_MODE.md).
 
 ## Run
 
 ```
-pip install pytest
+pip install ".[test]"
 python -m pytest -q
 ```
 
-No runtime dependencies (Python 3.10+ standard library only).
+The engine has no runtime dependencies (Python 3.10+ standard library). The
+hardened local mode needs the `secure` extra (`cryptography`, `keyring`):
+
+```
+pip install ".[secure]"
+python -m laylaw init      # once: create the encrypted vault, get the recovery code
+python -m laylaw run       # start the local app in the browser
+```
 
 ## Quick use
 
