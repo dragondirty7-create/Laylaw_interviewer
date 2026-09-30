@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>{% block title %}Laylaw{% endblock %} · Laylaw</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+<script src="{{ url_for('static', filename='app.js') }}" defer></script>
+</head>
+<body>
+<a class="skip visually-hidden" href="#main">Skip to main content</a>
+<header class="top">
+  <span class="brand">Laylaw</span>
+  {% if signed_in %}
+  <nav aria-label="Account">
+    <a href="{{ url_for('home') }}">My interviews</a>
+    <form method="post" action="{{ url_for('logout') }}" class="inline">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <button type="submit" class="link">Sign out</button>
+    </form>
+  </nav>
+  {% endif %}
+</header>
+<main id="main" tabindex="-1">
+{% block main %}{% endblock %}
+</main>
+<footer class="foot">Private. Your answers and files are encrypted and only visible to your account.
+If you or anyone else is in immediate danger, call 911.</footer>
+</body>
+</html>

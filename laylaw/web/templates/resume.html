@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Welcome back{% endblock %}
+{% block main %}
+<h1>Welcome back</h1>
+<p class="question">{{ prompt }}</p>
+<form method="post" action="{{ url_for('resume', iid=s.id) }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf }}">
+  <button type="submit" class="primary">Continue</button>
+  <a class="button" href="{{ url_for('home') }}">Not now</a>
+</form>
+{% endblock %}
