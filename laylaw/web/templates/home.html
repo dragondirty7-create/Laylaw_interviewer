@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}My interviews{% endblock %}
+{% block main %}
+<h1>Hi, {{ name }}</h1>
+{% if flash == 'saved' %}<p class="note" role="status">Saved. When you come back, we'll pick up at the same question.</p>{% endif %}
+{% if interviews %}
+<h2>Continue where you left off</h2>
+<ul class="list">
+  {% for i in interviews %}
+  <li class="card row">
+    <div>
+      <strong>{{ i.path }} interview</strong>
+      <span class="muted">· {{ 'Finished' if i.status == 'closed' else ('Paused' if i.status.startswith('paused') else 'In progress') }}
+        {% if i.section %}· {{ i.section }}{% endif %} · last saved {{ i.updated }} UTC · {{ i.uploads }} file{{ '' if i.uploads == 1 else 's' }}</span>
+    </div>
+    <a class="button primary" href="{{ url_for('interview', iid=i.id) }}">{{ 'Open' if i.status == 'closed' else 'Continue' }}</a>
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
+<h2>{{ 'Start another interview' if interviews else 'Start your interview' }}</h2>
+<form method="post" action="{{ url_for('start_interview') }}" class="card">
+  <input type="hidden" name="csrf_token" value="{{ csrf }}">
+  <fieldset>
+    <legend>What kind of matter is this?</legend>
+    {% for key, label in paths.items() %}
+    <label class="check"><input type="radio" name="path" value="{{ key }}" required {% if loop.first %}checked{% endif %}> {{ label }}</label>
+    {% endfor %}
+  </fieldset>
+  <p class="muted small">Criminal defense: {{ notice }}</p>
+  <label class="check"><input type="checkbox" name="adult" value="yes" required> I am 18 or older.</label>
+  <p class="muted">One question at a time. Everything saves as you go, and you can stop and come back whenever you like.</p>
+  <button type="submit" class="primary">Start</button>
+</form>
+{% endblock %}

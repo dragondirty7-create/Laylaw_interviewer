@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Interview{% endblock %}
+{% block main %}
+<p class="muted">{{ s.path }} interview{% if s.section %} · <span>{{ s.section }}</span>{% endif %}</p>
+{% if flash == 'stale' %}<p class="note" role="status">This page was out of date, so nothing was saved from it. Here's the current question.</p>{% endif %}
+{% if flash == 'empty' %}<p class="error" role="alert">Please type an answer, or use Skip / Not sure.</p>{% endif %}
+{% if flash == 'nofiles' %}<p class="error" role="alert">Choose at least one file to upload.</p>{% endif %}
+{% if flash and flash.startswith('up') %}{% set parts = flash[2:].split('-') %}
+<p class="note" role="status">{{ parts[0] }} file(s) uploaded.{% if parts[1] != '0' %} {{ parts[1] }} file(s) were not accepted (type or size).{% endif %}</p>{% endif %}
+
+{% if safety %}
+<div class="safety" role="alert"><strong>Your safety comes first.</strong> If you or anyone else is in immediate danger, call 911 now.</div>
+{% endif %}
+
+{% if done %}
+<h1>Interview complete</h1>
+<p>Thank you. Everything you said has been saved. You can still add files below.</p>
+{% elif blocked %}
+<h1>Paused for now</h1>
+<p>This interview can't continue until the person helping you confirms it's set up for the right person and case. Your answers so far are saved.</p>
+{% else %}
+<h1 class="visually-hidden">Current question</h1>
+<form method="post" action="{{ url_for('answer', iid=s.id) }}" class="card" id="answer-form" data-draft-url="{{ url_for('save_draft', iid=s.id) }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf }}">
+  <input type="hidden" name="qtoken" value="{{ qtoken }}">
+  <label for="answer" class="question">{% for para in question.split('\n\n') %}<span class="para">{{ para }}</span>{% endfor %}</label>
+  <textarea id="answer" name="answer" rows="7" autocomplete="off" spellcheck="true" maxlength="20000">{{ draft }}</textarea>
+  <p class="muted small" id="draft-status" role="status" aria-live="polite"></p>
+  <div class="actions">
+    <button type="submit" name="action" value="answer" class="primary">Save answer</button>
+    <button type="submit" name="action" value="skip" formnovalidate>Skip</button>
+    <button type="submit" name="action" value="not_sure" formnovalidate>Not sure</button>
+    <button type="submit" name="action" value="later" formnovalidate>Save and finish later</button>
+  </div>
+</form>
+{% endif %}
+
+<section class="card" aria-labelledby="docs-h">
+  <h2 id="docs-h">Supporting documents</h2>
+  <p class="muted small">Add any papers, screenshots, messages or recordings you think are relevant. You can add several at once, now or later. Up to {{ max_mb }} MB each.</p>
+  <form method="post" action="{{ url_for('upload', iid=s.id) }}" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <label for="files">Choose files</label>
+    <input id="files" name="files" type="file" multiple>
+    <button type="submit">Upload</button>
+  </form>
+  {% if records %}
+  <ul class="files">
+    {% for r in records %}<li><a href="{{ url_for('download', iid=s.id, rid=r.id) }}">{{ r.name }}</a></li>{% endfor %}
+  </ul>
+  {% else %}<p class="muted small">No files yet.</p>{% endif %}
+  <p class="muted small">Accepted types: {{ exts }}</p>
+</section>
+{% endblock %}

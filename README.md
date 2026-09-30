@@ -24,9 +24,17 @@ laylaw/interviewer/
   paths.py      section specs; family-law and criminal-defense paths (same engine, same rules);
                 adaptive section selection; intake/preflight questions
   research_basis.py  Research Basis template/record (never read by the engine)
+laylaw/web/          authenticated, encrypted, per-client web app (optional extra: pip install -e ".[web]")
+  app.py        routes: sign in/out, start/resume, one-question answer form, autosaved drafts, uploads
+  accounts.py   operator-created accounts, scrypt passwords, server-side sessions, lockout, audit log
+  crypto.py     AES-256-GCM with per-client HKDF keys; master key from LAYLAW_MASTER_KEY only
+  secure_store.py  encrypted drop-in for ClientWorkspace (the engine is unchanged)
+  admin.py      operator CLI (create-user, reset-password, confirm-workspace, ...)
+  wsgi.py       production entry point (waitress, behind an HTTPS proxy)
 laylaw/organize/
   interface.py  read-only export + protocol for a future ORGANIZE stage (case packet lives there)
 docs/RESEARCH_BASIS.md  the Research Basis template
+docs/DEPLOY.md          host requirements and deployment steps (not deployed)
 tests/
   test_required.py     the 11 tests required by the Claude Code handoff
   test_repair_pass.py  corrections, controls, criminal path, preflight, propositions,
@@ -35,6 +43,8 @@ tests/
   test_audit_repairs.py  regressions for the fdd7d449 audit: provenance, unknown basis,
                        acknowledgements vs corrections, discrepancy binding, attributed
                        wording, immediate-danger preflight, conflict labels
+  test_web_security.py auth, sessions, CSRF, two-client isolation, encryption at rest,
+                       private uploads, UI save/resume, log privacy (synthetic clients A and B)
 .github/workflows/tests.yml  CI: full pytest suite on every push and PR
 ```
 
@@ -63,18 +73,32 @@ stated basis ("They were using drugs.") is recorded as UNKNOWN and followed by
 
 ## Security status
 
-**Not production-ready for real client data.** There is no encryption at rest
-and no authentication; directory isolation is not a multi-user security
-boundary. See [SECURITY.md](SECURITY.md).
+The engine's plain `WorkspaceStore` writes readable JSON and has no authentication:
+use it for synthetic data only. The `laylaw.web` layer adds authentication, per-client
+authorization, encryption at rest, private uploads and secure sessions, tested with
+two synthetic clients. **It is not yet approved for real client data**: it still needs
+an HTTPS deployment meeting `docs/DEPLOY.md`, a privacy/legal review, and a final
+readiness review. See [SECURITY.md](SECURITY.md).
 
 ## Run
 
 ```
-pip install pytest
-python -m pytest -q
+pip install pytest "flask>=3.0,<4" "cryptography>=42" waitress
+python -m pytest -q                               # everything
+LAYLAW_TEST_STORE=encrypted python -m pytest -q   # engine suite again, on the encrypted store
 ```
 
-No runtime dependencies (Python 3.10+ standard library only).
+The engine has no runtime dependencies (Python 3.10+ standard library only).
+The web layer needs Flask, cryptography and waitress (`pip install -e ".[web]"`).
+
+Local web run with synthetic accounts only (plain HTTP needs `LAYLAW_COOKIE_SECURE=0`;
+never use that setting in production):
+
+```
+export LAYLAW_DATA_DIR=./laylaw-data LAYLAW_MASTER_KEY="$(python -m laylaw.web.admin generate-key)"
+python -m laylaw.web.admin create-user test.fictional --display-name "Test Fictional"
+LAYLAW_COOKIE_SECURE=0 waitress-serve --listen=127.0.0.1:8080 laylaw.web.wsgi:app
+```
 
 ## Quick use
 
