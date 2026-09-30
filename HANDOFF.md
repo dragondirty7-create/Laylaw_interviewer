@@ -1,6 +1,6 @@
 # Handoff — Laylaw Interviewer (current state)
 
-**Refreshed:** 2026-09-29 (America/Los_Angeles), by Claude, verified against the repo.
+**Refreshed:** 2026-09-29, updated 2026-09-30 (America/Los_Angeles), by Claude, verified against the repo.
 This replaces the earlier pre-merge handoff and the pre-repair audit checklist. Both are
 history now (see [History](#history)); **nothing in them is an open task.**
 
@@ -13,7 +13,7 @@ history now (see [History](#history)); **nothing in them is an open task.**
 | Tests on `main` | **97 passed**, `python -m pytest -q` (Python 3.11 locally; CI runs 3.10 and 3.12) |
 | CI on `main` | Green: https://github.com/dragondirty7-create/Laylaw_interviewer/actions/runs/36471658632 |
 | Naming | "Laylaw" only; CI's legacy-name check passes |
-| Open work | PR #3 (Issue #2, secure single-user local mode). Open, **not merged**, awaiting Soul's security review |
+| Open work | Two real-client security PRs, both open and **not merged**: PR #3 (local mode on Chelsea's own computer) and PR #5 (hosted web app). Pick one; see section 4 |
 
 ## 2. INTERVIEWER CORE STATUS: merged and working (synthetic data)
 
@@ -56,44 +56,53 @@ regression tests that fail on the audited code. All **57** of those tests pass o
 
 ## 4. REAL-CLIENT DEPLOYMENT STATUS: blocked
 
-**The interviewer core is technically functional and merged, but real-client use remains blocked
-until the real-data security requirements are implemented and verified.**
+**The interviewer core is merged and working on synthetic data. Real-client use is still blocked.**
+On `main` today there is no encryption at rest, no authentication, no audit log and no deletion
+workflow; storage is plaintext JSON for synthetic data only (see `SECURITY.md`).
 
-On `main` today: no encryption at rest, no authentication or access control, no audit log, no
-deletion workflow, no local UI. Storage is plaintext JSON for synthetic data only (see `SECURITY.md`).
+Two open PRs each implement the missing security layer. **Neither counts until Soul reviews it and
+it is merged.** They solve the same problem two ways, so one should be chosen before more work:
 
-Those requirements are implemented in **PR #3** (encrypted vault, passphrase + OS credential
-store gate, content-free tamper-evident audit log, deletion, export disabled, real-data readiness
-gate, 127.0.0.1-only browser app; 133 tests, CI green). **None of that counts until Soul's review
-passes and it is merged.**
+| | PR #3 `feat/secure-local-mode` | PR #5 `feat/real-client-security` |
+|---|---|---|
+| Where it runs | Chelsea's own computer, 127.0.0.1 only | A hosted HTTPS server |
+| Protection | Encrypted vault (scrypt + OS keyring, AES-256-GCM), recovery codes, HMAC-chained audit log, deletion | Accounts + server sessions, lockout, per-client AES-256-GCM, private uploads, content-free logs |
+| Tests / CI | 133 passing, green | 126 passing (+125/1 skipped on encrypted store), green on 3.10/3.12 |
+| Still needed | Soul review; setup and dry run on her machine | Soul review; a host with an encrypted disk and secret manager (Vercel functions don't fit, `docs/DEPLOY.md`); data-location decision; second factor recommended; key rotation and retention workflow |
+| Fits | One client, one computer | Several clients, any device |
 
-## 5. Chelsea use path (smallest route to safe real use)
+**Recommendation:** for Chelsea alone, PR #3 is the shorter safe route: no server, no third-party
+host holding case data, and she alone holds the passphrase. PR #5 is the route if Laylaw needs
+more than one client or phone access. Decision: Michael + Soul.
 
-- [ ] **Security prerequisites.** Soul reviews PR #3 (encryption at rest, access gate, audit log,
-      deletion, export boundary, real-data gate). Fix review findings; merge only on approval.
-- [ ] **Engine usability fix (small).** "No, that's all." is currently recorded as content, so
-      follow-ups repeat and the interview doesn't end (found while testing PR #3). A one-line
-      change to `_NOTHING_MORE` plus a regression test; Soul decides whether it rides with PR #3.
-- [ ] **Deployment/UI requirement.** Chelsea's own computer and OS account: sign-in password,
-      full-disk encryption (BitLocker/FileVault), auto screen lock; Python + `pip install ".[secure]"`;
-      **Chelsea** runs `python -m laylaw init` (only she knows the passphrase), recovery code on paper;
-      `python -m laylaw doctor` reports "Ready for real case data".
+## 5. Chelsea use path (smallest route to safe real use, via PR #3)
+
+- [ ] **Choose the track** (section 4). If PR #5 instead, swap the setup steps below for
+      `docs/DEPLOY.md` on that branch, plus a smoke test in her own browser and phone.
+- [ ] **Security review.** Soul reviews PR #3. Fix findings; merge only on approval. Rebase it on
+      `main` after this docs PR lands (both touch `HANDOFF.md`).
+- [ ] **Engine usability fix (small).** "No, that's all." is recorded as content, so follow-ups repeat
+      and the interview doesn't end (found while testing PR #3). One change to `_NOTHING_MORE` plus a
+      regression test; Soul decides whether it rides with PR #3.
+- [ ] **Her computer.** Her own OS account with a password, full-disk encryption (BitLocker/FileVault),
+      auto screen lock; Python + `pip install ".[secure]"`; **Chelsea** runs `python -m laylaw init`
+      (only she knows the passphrase), recovery code on paper; `python -m laylaw doctor` reports
+      "Ready for real case data".
 - [ ] **Synthetic-client dry run on that computer.** A full interview with a made-up client: launch,
-      unlock, answer, save and exit, lock, resume, upload, finish, outputs, delete (`docs/LOCAL_MODE.md`
-      in PR #3).
-- [ ] **Access-isolation verification on that computer.** Confirm: another OS account can't open the
-      vault; the copied vault folder plus the passphrase won't open elsewhere; the app isn't reachable
-      from another device; `verify-audit` passes and the log holds no case content.
-- [ ] **Privacy/legal review.** Confidentiality and privilege expectations; the app states nothing is
-      privileged.
-- [ ] **Final real-client readiness review** (Soul + Michael) with the above evidence. Only then real
-      case information.
+      unlock, answer, save and exit, lock, resume, upload, finish, outputs, delete
+      (`docs/LOCAL_MODE.md` in PR #3).
+- [ ] **Isolation check on that computer.** Another OS account can't open the vault; a copied vault
+      plus the passphrase won't open elsewhere; the app isn't reachable from another device;
+      `verify-audit` passes and the log holds no case content.
+- [ ] **Privacy/legal review.** Confidentiality and privilege expectations; the app states nothing
+      is privileged.
+- [ ] **Final readiness sign-off** (Soul + Michael) with the evidence above. Only then real case
+      information.
 
-## 6. Next recommended implementation step
+## 6. Next recommended step
 
-Respond to Soul's review of **PR #3** (`feat/secure-local-mode`). If Soul approves, include the
-"No, that's all." fix with a regression test, then the on-device dry run in section 5. The LLM
-conversation layer and question-volume prioritization stay deferred.
+Merge this docs PR, pick the track, then Soul reviews that PR. The LLM conversation layer and
+question-volume prioritization stay deferred.
 
 ## Known limitations (unchanged, not blockers for synthetic use)
 - Classifiers are English keyword matching (sources, acknowledgements, danger, advocacy guard); cautious but brittle.
