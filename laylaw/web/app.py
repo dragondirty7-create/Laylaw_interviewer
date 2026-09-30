@@ -227,6 +227,8 @@ def create_app(overrides: dict | None = None) -> Flask:
             resp.set_cookie(pre_name, pre, max_age=900, secure=secure, httponly=True, samesite="Strict", path="/")
             return resp
         token, _ = result
+        if g.auth is not None:          # signing in again ends the previous session on this browser
+            accounts.logout(g.auth)
         resp = redirect(url_for("home"))
         resp.set_cookie(cookie_name, token, secure=secure, httponly=True, samesite="Strict", path="/")
         resp.delete_cookie(pre_name, path="/", secure=secure, httponly=True, samesite="Strict")

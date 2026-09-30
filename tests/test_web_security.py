@@ -569,3 +569,19 @@ def test_unconfirmed_workspace_blocks_until_operator_confirms(env, monkeypatch, 
     # The operator command is scoped by username: B's name can't reach A's interview.
     with pytest.raises(SystemExit):
         admin.main(["confirm-workspace", "blair.fictional", iid])
+
+
+def test_signing_in_again_ends_the_previous_session(env):
+    c = browser(env)
+    login(c, "alex.fictional", PW_A)
+    old = c.get_cookie("__Host-laylaw", domain="laylaw.test").value
+    r = c.get("/login", base_url=BASE)                         # already signed in -> sent home
+    assert r.status_code == 302
+    pre_page = browser(env)                                     # get a fresh pre token in this browser
+    c.set_cookie("__Host-laylaw-pre", "p" * 32, domain="laylaw.test")
+    c.post("/login", data={"username": "alex.fictional", "password": PW_A, "pre": "p" * 32}, base_url=BASE)
+    replay = browser(env)
+    replay.set_cookie("__Host-laylaw", old, domain="laylaw.test")
+    assert page(replay, "/home").status_code == 302
+    assert page(c, "/home").status_code == 200
+    del pre_page
