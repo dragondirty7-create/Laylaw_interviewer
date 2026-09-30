@@ -5,7 +5,7 @@ one is chosen. **Choosing the host is a data-location decision.** Make it with
 the privacy/legal review in `SECURITY.md`, not ad hoc.
 
 ## Host requirements (all required)
-- **HTTPS only**, via a reverse proxy (Caddy, nginx, or a platform's TLS terminator) in front of the app. The session cookie is `Secure`, so sign-in does not work over plain HTTP. That is intentional.
+- **HTTPS only**, via a reverse proxy (Caddy, nginx, or a platform's TLS termination) in front of the app. The session cookie is `Secure`, so sign-in does not work over plain HTTP. That is intentional.
 - **A persistent, private disk** for `LAYLAW_DATA_DIR`, encrypted at the volume level. The app adds its own per-client encryption on top.
 - **One application process** (threads are fine). The app serializes writes per client with in-process locks.
 - **A secret manager** for `LAYLAW_MASTER_KEY`. It must not be stored on the data disk, in the repo, in the image, or in shell history.
