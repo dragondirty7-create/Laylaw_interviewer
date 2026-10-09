@@ -242,3 +242,15 @@ def test_quit_locks_and_stops(running):
     status, _, page = c.req("POST", "/quit", {"csrf": app.csrf})
     assert status == 200 and "locked and closed" in page
     assert app.store is None and app.shutdown_requested
+
+
+def test_referrer_policy_lets_browsers_send_a_real_origin(running):
+    """Regression: with Referrer-Policy no-referrer, Chromium sends "Origin: null" on every form POST and
+    the app refused all of them, including Unlock. Found by driving the app in Chromium on 2026-10-08."""
+    app, c, *_ = running
+    status, headers, _ = c.req("GET", launch_url(app).split(str(app.port), 1)[1])
+    status, headers, _ = c.req("GET", "/")
+    assert headers["Referrer-Policy"] == "same-origin"
+    # A null Origin is still refused.
+    status, _, _ = c.req("POST", "/unlock", {"csrf": app.csrf, "passphrase": PASS}, origin="null")
+    assert status == 403

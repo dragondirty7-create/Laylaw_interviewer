@@ -125,7 +125,10 @@ class Handler(BaseHTTPRequestHandler):
                          "frame-ancestors 'none'; base-uri 'none'")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
-        self.send_header("Referrer-Policy", "no-referrer")
+        # same-origin, not no-referrer: under no-referrer Chromium browsers send "Origin: null" on form
+        # POSTs, which _origin_ok rightly refuses, so nothing could be submitted (not even Unlock).
+        # same-origin still sends no referrer to any other site.
+        self.send_header("Referrer-Policy", "same-origin")
         self.send_header("Cross-Origin-Opener-Policy", "same-origin")
         self.send_header("Cross-Origin-Resource-Policy", "same-origin")
         self.end_headers()
