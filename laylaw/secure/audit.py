@@ -42,6 +42,7 @@ EVENTS = {
     "upload_stored", "upload_read", "outputs_viewed", "export_refused",
     "session_deleted", "workspace_deleted", "passphrase_changed", "recovery_used", "recovery_failed",
     "key_error", "integrity_error", "readiness_refused", "access_refused", "audit_archived",
+    "record_created", "record_deleted", "packet_viewed",
 }
 _SAFE_STR = re.compile(r"^[A-Za-z0-9_.:/-]{0,64}$")
 
