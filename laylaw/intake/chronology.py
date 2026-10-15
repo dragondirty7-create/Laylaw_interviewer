@@ -15,7 +15,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from .model import EVIDENCE_CATEGORY_LABELS, AnswerStatus, IncidentIntake
+from .model import AnswerStatus, IncidentIntake
 from .steps import STEP_BY_ID
 
 USER_STATEMENT = "USER_STATEMENT"
@@ -92,7 +92,7 @@ def chronology(intake: IncidentIntake) -> list[Row]:
 
     for ev in intake.evidence:
         if ev.date_text:
-            cat = EVIDENCE_CATEGORY_LABELS.get(ev.category, ev.category)
+            cat = intake.category_label(ev.category)
             rows.append(Row(ev.date_text, f"File: {cat} ({ev.filename})", EVIDENCE, EVIDENCE))
     return rows
 
@@ -138,7 +138,7 @@ def open_questions(intake: IncidentIntake) -> list[str]:
 def evidence_inventory(intake: IncidentIntake) -> list[dict]:
     return [{
         "file": ev.filename,
-        "kind": EVIDENCE_CATEGORY_LABELS.get(ev.category, ev.category),
+        "kind": intake.category_label(ev.category),
         "source": ev.source or "Not given",
         "date": ev.date_text or "Not given",
         "original": "Original kept unchanged" if ev.original_preserved else "Changed",

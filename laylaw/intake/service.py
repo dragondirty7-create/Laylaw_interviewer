@@ -11,16 +11,19 @@ import hashlib
 import uuid
 
 from ..secure.store import SecureStore, SecureWorkspace
-from .model import EVIDENCE_CATEGORY_LABELS, EvidenceItem, IncidentIntake, IntakeError, now_iso
+from .flows import DEFAULT_FLOW
+from .model import EvidenceItem, IncidentIntake, IntakeError, now_iso
 
 KIND = "intake"
 MATTER_PREFIX = "matter-"
 
 
-def new_matter(store: SecureStore, nickname: str, *, synthetic: bool) -> tuple[SecureWorkspace, IncidentIntake]:
+def new_matter(store: SecureStore, nickname: str, *, synthetic: bool,
+               flow: str = DEFAULT_FLOW) -> tuple[SecureWorkspace, IncidentIntake]:
     cid = MATTER_PREFIX + uuid.uuid4().hex[:12]
+    probe = IncidentIntake.new(cid, nickname, synthetic=synthetic, flow=flow)  # refuses unknown flows first
     ws = store.workspace(cid)
-    intake = IncidentIntake.new(cid, nickname, synthetic=synthetic)
+    intake = probe
     save(ws, intake)
     return ws, intake
 
@@ -48,17 +51,19 @@ def list_matters(store: SecureStore) -> list[dict]:
             it = load(ws, mid)
             done, total = it.progress()
             out.append({"client_id": cid, "matter_id": mid, "nickname": it.nickname, "updated": it.updated_at,
-                        "done": done, "total": total, "finished": it.finished, "files": len(it.evidence)})
+                        "done": done, "total": total, "finished": it.finished, "files": len(it.evidence), "flow": it.flow,
+                        "flow_title": it.spec.title})
     return sorted(out, key=lambda m: m["updated"], reverse=True)
 
 
 def add_evidence(ws: SecureWorkspace, intake: IncidentIntake, *, filename: str, data: bytes, category: str,
                  source: str = "", date_text: str = "", notes: str = "") -> EvidenceItem:
-    if category not in EVIDENCE_CATEGORY_LABELS:
+    labels = dict(intake.spec.evidence_categories)
+    if category not in labels:
         raise IntakeError("Choose what kind of file this is.")
     if not data:
         raise IntakeError("That file is empty.")
-    record = ws.store_upload(intake.matter_id, filename or "file", data, label=EVIDENCE_CATEGORY_LABELS[category])
+    record = ws.store_upload(intake.matter_id, filename or "file", data, label=labels[category])
     item = EvidenceItem(id=record.id, category=category, filename=record.filename or "file",
                         sha256=hashlib.sha256(data).hexdigest(), size=len(data), stored_at=now_iso(),
                         source=source.strip()[:120], date_text=date_text.strip()[:40], notes=notes.strip()[:500])

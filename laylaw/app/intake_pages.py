@@ -5,10 +5,11 @@ screen (tables scroll inside their card rather than pushing the page sideways).
 """
 from __future__ import annotations
 
+from ..intake import supervision_outputs as sup
 from ..intake.chronology import BASIS_LABELS, chronology, evidence_inventory, open_questions
-from ..intake.model import EVIDENCE_CATEGORIES, AnswerStatus, IncidentIntake
+from ..intake.model import AnswerStatus, IncidentIntake
 from ..intake.packet import build_packet
-from ..intake.steps import SAFETY_MESSAGE, STEP_BY_ID, Step
+from ..intake.steps import Step
 from .pages import csrf_field, e, nav_bar, page
 
 STYLE = """
@@ -18,6 +19,10 @@ STYLE = """
 .choices label{display:flex;gap:10px;align-items:flex-start;font-weight:400;border:1px solid var(--line);
  border-radius:10px;padding:12px 14px;margin:8px 0;cursor:pointer;min-height:48px}
 .choices input{margin-top:4px;transform:scale(1.3)}
+.basis{display:inline-block;font-size:.75rem;font-weight:700;letter-spacing:.02em;border:1px solid var(--line);
+ border-radius:4px;padding:1px 6px;margin-left:4px;white-space:nowrap}
+.basis.CONFLICT{border-color:var(--warn);color:var(--warn)}
+.basis.UNKNOWN{opacity:.75}
 .why{background:var(--bg);border-left:4px solid var(--accent);padding:8px 12px;margin:10px 0;font-size:.92rem}
 .safety{background:var(--warnbg);color:var(--warn);border:1px solid var(--warn);border-radius:8px;padding:10px 12px;
  margin:12px 0;font-weight:600}
@@ -44,7 +49,9 @@ def _progress_text(m: dict) -> str:
 
 def home_section(csrf: str, matters: list[dict]) -> str:
     rows = "".join(
-        f"<tr><td><a href='/n/{e(m['client_id'])}/{e(m['matter_id'])}'>{e(m['nickname'] or 'Incident intake')}</a>"
+        f"<tr><td><a href='/n/{e(m['client_id'])}/{e(m['matter_id'])}'>"
+        f"{e(m['nickname'] or m.get('flow_title') or 'Incident intake')}</a>"
+        f"<br><span class=muted>{e(m.get('flow_title') or 'Incident intake')}</span>"
         f"</td><td>{_progress_text(m)}"
         f"</td><td>{e(m['files'])}</td><td class=muted>{e(str(m['updated'])[:16].replace('T', ' '))}</td></tr>"
         for m in matters)
@@ -59,6 +66,17 @@ def home_section(csrf: str, matters: list[dict]) -> str:
             f"<input type=text id=nick name=nickname maxlength=80 placeholder='for example: maintenance entry'>"
             f"<p class=muted>Don't put names or addresses here.</p>"
             f"<label><input type=checkbox name=adult value=yes required> I'm an adult filling this out</label>"
+            f"<button>Start</button></form></div>"
+            f"<div class=card><form method=post action='/intake/new'>{csrf_field(csrf)}"
+            f"<input type=hidden name=flow value=supervision>"
+            f"<p><strong>Start a criminal &amp; supervision intake</strong></p>"
+            f"<p class=muted>For charges, or parole, probation or other supervision, including when someone has "
+            f"said treatment or rehab is required. It records who said what, what the paper says, and the next "
+            f"date. It's kept separate from every other interview and client.</p>"
+            f"<label for=nick2>A short name you'll recognise (optional)</label>"
+            f"<input type=text id=nick2 name=nickname maxlength=80 placeholder='for example: treatment question'>"
+            f"<p class=muted>Don't put names, case numbers or addresses here.</p>"
+            f"<label><input type=checkbox name=adult value=yes required> I'm an adult filling this out</label>"
             f"<button>Start</button></form></div>")
 
 
@@ -68,7 +86,7 @@ def _header(intake: IncidentIntake, step: Step | None) -> str:
     section = e(step.section) if step else "Review"
     stage = "The essentials" if step is not None and step.stage == 1 else "More detail"
     label = (stage if section == stage else f"{stage} · {section}") if step else "Review"
-    title = e(intake.nickname or "Incident intake")
+    title = e(intake.nickname or intake.spec.title)
     return (f"<h1>{title}</h1><p class=muted>{label} · {done} of about {total} answered</p>"
             f"<div class=progress aria-hidden=true><span style='width:{pct}%'></span></div>")
 
@@ -77,13 +95,14 @@ def _safety(intake: IncidentIntake, *, full: bool = False) -> str:
     """The full message right after the person says yes (and on the review page); a short line after that."""
     if intake.plain_answers().get("danger_now") != "yes":
         return ""
-    if full or intake.current == "summary":
-        return f"<div class=safety role=alert>{e(SAFETY_MESSAGE)}</div>"
+    if full or intake.current == intake.spec.safety_step:
+        return f"<div class=safety role=alert>{e(intake.spec.safety_message)}</div>"
     return "<p class=muted><strong>If anyone is in danger right now, call 911.</strong></p>"
 
 
-def _upload_form(csrf: str, cid: str, mid: str, back: str) -> str:
-    opts = "".join(f"<option value='{e(k)}'>{e(v)}</option>" for k, v in EVIDENCE_CATEGORIES)
+def _upload_form(csrf: str, intake: IncidentIntake, back: str) -> str:
+    cid, mid = intake.client_id, intake.matter_id
+    opts = "".join(f"<option value='{e(k)}'>{e(v)}</option>" for k, v in intake.spec.evidence_categories)
     return (f"<form method=post action='{_base(cid, mid)}/evidence' enctype='multipart/form-data'>{csrf_field(csrf)}"
             f"<input type=hidden name=back value='{e(back)}'>"
             f"<label for=f>Choose a file</label><input type=file id=f name=file required>"
@@ -117,9 +136,20 @@ def step_page(csrf: str, intake: IncidentIntake, step: Step, *, editing: bool, b
     hidden = f"{csrf_field(csrf)}<input type=hidden name=step value='{e(step.id)}'>"
 
     if step.kind == "choice":
+        # A step with a default (for example "I'm not sure") opens with it chosen, unless the person already
+        # answered or said they weren't sure.
+        chosen = prior or ("not_sure" if current is not None and current.status == AnswerStatus.NOT_SURE
+                           else ("" if current is not None else step.default))
         field = "<div class=choices role=radiogroup>" + "".join(
-            f"<label><input type=radio name=value value='{e(k)}'{' checked' if prior == k else ''} required>"
+            f"<label><input type=radio name=value value='{e(k)}'{' checked' if chosen == k else ''} required>"
             f"<span>{e(v)}</span></label>" for k, v in step.choices) + "</div>"
+    elif step.kind == "multi":
+        picked = set(prior.split(",")) if prior else (
+            {"not_sure"} if current is not None and current.status == AnswerStatus.NOT_SURE else set())
+        field = ("<fieldset class=choices style='border:0;padding:0;margin:0'>"
+                 "<legend class=muted>Choose all that apply</legend>" + "".join(
+                     f"<label><input type=checkbox name=multi value='{e(k)}'{' checked' if k in picked else ''}>"
+                     f"<span>{e(v)}</span></label>" for k, v in step.choices) + "</fieldset>")
     elif step.kind == "long":
         field = f"<label for=v class=muted>Your answer</label><textarea id=v name=value maxlength={step.max_len}>" \
                 f"{e(prior)}</textarea>"
@@ -131,7 +161,7 @@ def step_page(csrf: str, intake: IncidentIntake, step: Step, *, editing: bool, b
         field = (f"<label for=v class=muted>Your answer</label><input type=text id=v name=value "
                  f"maxlength={step.max_len} value='{e(prior)}' autocomplete=off>")
 
-    has_unsure = step.kind == "choice" and any(k == "not_sure" for k, _ in step.choices)
+    has_unsure = step.kind in ("choice", "multi") and any(k == "not_sure" for k, _ in step.choices)
     buttons = "<div class=row-actions>"
     if step.kind == "upload":
         buttons += "<button name=action value=done formnovalidate>Continue</button>"
@@ -152,17 +182,81 @@ def step_page(csrf: str, intake: IncidentIntake, step: Step, *, editing: bool, b
     if step.kind == "upload":
         # Files first, then Continue, so nobody moves on before adding what they meant to add.
         body = (STYLE + _header(intake, step) + _safety(intake) + f"<div class=card>{question}{help_}"
-                f"{_upload_form(csrf, cid, mid, 'step')}<h2>Files added</h2>{_files_list(intake)}"
+                f"{_upload_form(csrf, intake, 'step')}<h2>Files added</h2>{_files_list(intake)}"
                 f"<form method=post action='{base}/answer'>{hidden}{buttons}</form></div>")
     else:
         body = (STYLE + _header(intake, step) + _safety(intake)
                 + f"<div class=card><form method=post action='{base}/answer'>{hidden}{question}"
                 f"{help_}{why}{field}{example}{buttons}</form></div>")
     body += f"<p class=muted><a href='{base}/review'>See everything so far</a></p>"
-    return page("Incident intake", body, banner=banner, nav=nav_bar(csrf), messages=messages)
+    return page(intake.spec.title, body, banner=banner, nav=nav_bar(csrf), messages=messages)
+
+
+def _basis(basis: str) -> str:
+    return f"<span class='basis {e(basis)}'>{e(sup.BASIS_LABELS.get(basis, basis))}</span>"
+
+
+def _items_table(items) -> str:
+    return "<dl class=review>" + "".join(f"<dt>{e(i.label)}</dt><dd>{e(i.value)} {_basis(i.basis)}</dd>"
+                                         for i in items) + "</dl>"
+
+
+def _supervision_review(csrf: str, intake: IncidentIntake, *, banner: str, messages) -> str:
+    base = _base(intake.client_id, intake.matter_id)
+    items = []
+    for step in intake.applicable_steps():
+        if step.kind == "upload" or step.id == "stage_gate":
+            continue
+        shown, basis = sup.shown(intake, step.id)
+        a = intake.answers.get(step.id)
+        change = (f"<form method=post action='{base}/edit' class=inline>{csrf_field(csrf)}"
+                  f"<input type=hidden name=step value='{e(step.id)}'><button class=plain>Change</button></form>"
+                  if a is not None else "")
+        items.append(f"<dt>{e(step.prompt)}</dt><dd>{e(shown)} {_basis(basis)} {change}</dd>")
+    if sup.stopped_under_18(intake):
+        status = f"<p>{e(sup.ADULT_STOP)}</p>"
+    elif intake.finished:
+        status = ("<p>Everything has been asked. Look it over, change anything that's not right, then open the "
+                  "summary.</p>")
+    else:
+        status = f"<p>Some questions are still to come. <a href='{base}'>Continue where you left off</a>.</p>"
+    dates = "".join(f"<tr><td>{e(r['date'])}</td><td>{e(r['what'])}</td><td>{e(r['who_said'])}</td>"
+                    f"<td>{e(r['precision'])} {_basis(r['basis'])}</td></tr>" for r in sup.time_sensitive_dates(intake))
+    opts = sup.nonresidential_comparison(intake)
+    opt_rows = "".join(f"<tr><td>{e(o['option'])}</td><td>{e(o['discussed'])} {_basis(o['discussed_basis'])}</td>"
+                       f"<td>{e(o['approval'])} {_basis(o['approval_basis'])}</td><td>{e(o['officially_verified'])}"
+                       f"</td></tr>" for o in opts)
+    inv = "".join(f"<tr><td>{e(i['file'])}</td><td>{e(i['kind'])}</td><td>{e(i['source'])}</td>"
+                  f"<td>{e(i['date'])}</td><td>{e(i['original'])}</td></tr>" for i in sup.evidence_inventory(intake))
+    questions = "".join(f"<li>{e(q)}</li>" for q in sup.open_questions(intake))
+    hope = intake.value("hoping_for") if intake.step_by_id["hoping_for"] in intake.applicable_steps() else None
+    body = (STYLE + _header(intake, None) + _safety(intake, full=True) + f"<div class=card>{status}</div>"
+            f"<h2>Your answers</h2><div class=card><dl class=review>{''.join(items)}</dl></div>"
+            + ("" if sup.stopped_under_18(intake) else
+               f"<h2>Time-sensitive dates</h2><div class=card><div class=scroll><table><tr><th>Date</th><th>What"
+               f"</th><th>From</th><th>Precision</th></tr>{dates}</table></div></div>"
+               f"<h2>Where the treatment requirement comes from</h2><div class=card>"
+               f"{_items_table(sup.requirement_source_map(intake))}</div>"
+               f"<h2>Nonresidential options</h2><div class=card>"
+               + (f"<div class=scroll><table><tr><th>Option</th><th>Discussed</th><th>Approval</th>"
+                  f"<th>Officially verified</th></tr>{opt_rows}</table></div><p class=muted>{e(sup.NONRES_CAVEAT)}</p>"
+                  if opts else "<p class=muted>None reported as discussed.</p>") + "</div>"
+               + (f"<h2>What you hope to change or clarify</h2><div class=card><p>{e(hope)}</p><p class=muted>Kept "
+                  f"apart from the facts.</p></div>" if hope else "")
+               + f"<h2>Files</h2><div class=card>"
+               + (f"<div class=scroll><table><tr><th>File</th><th>Kind</th><th>From</th><th>Date</th><th>Original"
+                  f"</th></tr>{inv}</table></div>" if inv else "<p class=muted>No files yet.</p>")
+               + f"{_upload_form(csrf, intake, 'review')}</div>")
+            + f"<h2>Still open</h2><div class=card>"
+            + (f"<ul>{questions}</ul>" if questions else "<p class=muted>Nothing open.</p>") + "</div>"
+            f"<p><a href='{base}/packet'><strong>Open the summary</strong></a> · "
+            f"<a href='{base}/delete'>Delete this intake</a></p>")
+    return page("Review", body, banner=banner, nav=nav_bar(csrf), messages=messages)
 
 
 def review_page(csrf: str, intake: IncidentIntake, *, banner: str, messages) -> str:
+    if intake.flow == "supervision":
+        return _supervision_review(csrf, intake, banner=banner, messages=messages)
     cid, mid = intake.client_id, intake.matter_id
     base = _base(cid, mid)
     items = []
@@ -204,7 +298,7 @@ def review_page(csrf: str, intake: IncidentIntake, *, banner: str, messages) -> 
             f"<h2>Your answers</h2><div class=card><dl class=review>{''.join(items)}</dl></div>{child}"
             f"<h2>What happened, in order</h2><div class=card><div class=scroll><table><tr><th>When</th>"
             f"<th>What</th><th>Based on</th></tr>{rows}</table></div></div>"
-            f"<h2>Files</h2><div class=card>{inv_table}{_upload_form(csrf, cid, mid, 'review')}</div>"
+            f"<h2>Files</h2><div class=card>{inv_table}{_upload_form(csrf, intake, 'review')}</div>"
             f"<h2>Still open</h2><div class=card>"
             + (f"<ul>{questions}</ul>" if questions else "<p class=muted>Nothing open.</p>") + "</div>"
             f"<p><a href='{base}/packet'><strong>Open the referral packet</strong></a> · "
@@ -213,17 +307,18 @@ def review_page(csrf: str, intake: IncidentIntake, *, banner: str, messages) -> 
 
 
 def packet_page(csrf: str, intake: IncidentIntake, *, integrity: dict[str, bool], banner: str, messages) -> str:
-    packet = build_packet(intake)
+    packet = sup.build_packet(intake) if intake.flow == "supervision" else build_packet(intake)
+    title = "Rapid situation summary" if intake.flow == "supervision" else "Referral packet"
     base = _base(intake.client_id, intake.matter_id)
     bad = [i for i in intake.evidence if not integrity.get(i.id, False)]
     check = ("<p class=muted>Every file was checked just now against the fingerprint taken when it was added: "
              "all unchanged.</p>") if intake.evidence and not bad else \
         (f"<div class='msg err'>{len(bad)} file(s) did not match their original fingerprint.</div>" if bad else "")
-    body = (STYLE + f"<h1>Referral packet</h1><p class=muted><a href='{base}/review'>Back to the review</a></p>"
+    body = (STYLE + f"<h1>{e(title)}</h1><p class=muted><a href='{base}/review'>Back to the review</a></p>"
             f"<p class=muted>Shown on screen only. Export is turned off for encrypted data; printing or saving "
             f"this page creates an unencrypted copy.</p>{check}"
             f"<div class=card><pre>{e(packet['text'])}</pre></div>")
-    return page("Referral packet", body, banner=banner, nav=nav_bar(csrf), messages=messages)
+    return page(title, body, banner=banner, nav=nav_bar(csrf), messages=messages)
 
 
 def delete_page(csrf: str, intake: IncidentIntake, *, banner: str) -> str:
