@@ -12,7 +12,8 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
-from .steps import STEP_BY_ID, STEPS, applicable
+from .flows import DEFAULT_FLOW, EVIDENCE_CATEGORIES, EVIDENCE_CATEGORY_LABELS, Flow, get_flow  # noqa: F401
+from .steps import applicable
 
 SCHEMA_VERSION = 1
 
@@ -35,18 +36,6 @@ class AnswerStatus(str, Enum):
     SKIPPED = "skipped"
 
 
-EVIDENCE_CATEGORIES: tuple[tuple[str, str], ...] = (
-    ("texts_emails", "Texts or emails"),
-    ("work_order", "Maintenance request or work order"),
-    ("lease", "Lease pages"),
-    ("entry_notice", "Entry notice or entry log"),
-    ("footage", "Doorbell or security footage"),
-    ("photos", "Photos"),
-    ("witness", "Witness material"),
-    ("management_response", "Response from management"),
-    ("other", "Something else"),
-)
-EVIDENCE_CATEGORY_LABELS = dict(EVIDENCE_CATEGORIES)
 
 
 @dataclass
@@ -97,14 +86,34 @@ class IncidentIntake:
     #: Set while the person is changing one answer from the review page.
     editing: Optional[str] = None
     schema: int = SCHEMA_VERSION
+    #: Which question set this intake uses. Saves made before flows existed have none and are "housing".
+    flow: str = DEFAULT_FLOW
+
+    # -- the question set ---------------------------------------------------------
+    @property
+    def spec(self) -> Flow:
+        return get_flow(self.flow)
+
+    @property
+    def steps(self) -> tuple:
+        return self.spec.steps
+
+    @property
+    def step_by_id(self) -> dict:
+        return self.spec.step_by_id
+
+    def category_label(self, category: str) -> str:
+        return dict(self.spec.evidence_categories).get(category, category)
 
     # -- creation -----------------------------------------------------------
     @classmethod
-    def new(cls, client_id: str, nickname: str, *, synthetic: bool) -> "IncidentIntake":
+    def new(cls, client_id: str, nickname: str, *, synthetic: bool, flow: str = DEFAULT_FLOW) -> "IncidentIntake":
+        get_flow(flow)  # refuses an unknown flow before anything is created
         stamp = now_iso()
         intake = cls(matter_id="N-" + uuid.uuid4().hex[:12], client_id=client_id,
-                     nickname=nickname.strip()[:80], created_at=stamp, updated_at=stamp, synthetic=synthetic)
-        intake.current = STEPS[0].id
+                     nickname=nickname.strip()[:80], created_at=stamp, updated_at=stamp, synthetic=synthetic,
+                     flow=flow)
+        intake.current = intake.steps[0].id
         return intake
 
     # -- reading answers -------------------------------------------------------
@@ -124,7 +133,7 @@ class IncidentIntake:
 
     def applicable_steps(self) -> list:
         answers = self.plain_answers()
-        return [s for s in STEPS if applicable(s, answers)]
+        return [s for s in self.steps if applicable(s, answers)]
 
     def progress(self) -> tuple[int, int]:
         steps = self.applicable_steps()
@@ -143,7 +152,7 @@ class IncidentIntake:
             start = ids.index(step_id) + 1
         else:
             # The step stopped applying because of the answer just given; continue from its position.
-            order = [s.id for s in STEPS]
+            order = [s.id for s in self.steps]
             pos = order.index(step_id)
             start = next((i for i, s in enumerate(steps) if order.index(s.id) > pos), len(steps))
         for s in steps[start:]:
@@ -152,7 +161,7 @@ class IncidentIntake:
         return None
 
     def respond(self, step_id: str, status: AnswerStatus, value: Optional[str] = None) -> None:
-        step = STEP_BY_ID.get(step_id)
+        step = self.step_by_id.get(step_id)
         if step is None:
             raise IntakeError("That question isn't part of this intake.")
         if step_id not in (self.current, self.editing):
@@ -165,6 +174,18 @@ class IncidentIntake:
                 raise IntakeError(f"That answer is longer than this question allows ({step.max_len} characters).")
             if step.kind == "choice" and value not in dict(step.choices):
                 raise IntakeError("Choose one of the options.")
+            if step.kind == "multi":
+                picked = [v for v in (x.strip() for x in value.split(",")) if v]
+                allowed = dict(step.choices)
+                if not picked or any(v not in allowed for v in picked):
+                    raise IntakeError("Choose one or more of the options.")
+                exclusive = {"not_sure", "none"} & set(picked)
+                if exclusive and len(picked) > 1:
+                    raise IntakeError("\"I'm not sure\" and \"None\" can't be combined with other choices.")
+                # Stored in the order the options are listed, without repeats, so the record is stable.
+                value = ",".join(k for k, _ in step.choices if k in picked)
+                if value == "not_sure":
+                    status, value = AnswerStatus.NOT_SURE, None
             if step.kind == "upload" and value != "done":
                 raise IntakeError("Choose Continue when you've added what you have, or Skip.")
             if step.kind == "date" and not _valid_date(value):
@@ -249,7 +270,7 @@ class IncidentIntake:
 
     # -- evidence ---------------------------------------------------------------
     def add_evidence(self, item: EvidenceItem) -> None:
-        if item.category not in EVIDENCE_CATEGORY_LABELS:
+        if item.category not in dict(self.spec.evidence_categories):
             raise IntakeError("Choose what kind of file this is.")
         if any(e.id == item.id for e in self.evidence):
             raise IntakeError("That file is already listed.")
@@ -265,6 +286,8 @@ class IncidentIntake:
     @classmethod
     def from_dict(cls, d: dict) -> "IncidentIntake":
         d = dict(d)
+        d.setdefault("flow", DEFAULT_FLOW)
+        get_flow(d["flow"])
         if d.get("schema") != SCHEMA_VERSION:
             raise IntakeError("This intake was saved by a different version of Laylaw.")
         answers = {k: Answer(step_id=v["step_id"], status=AnswerStatus(v["status"]), value=v["value"],

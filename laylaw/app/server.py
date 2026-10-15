@@ -40,7 +40,6 @@ from . import intake_pages, pages
 from ..intake import service as intake_service
 from ..intake.model import AnswerStatus, IntakeError
 from ..intake.packet import PacketError
-from ..intake.steps import STEP_BY_ID
 
 LOOPBACK = {"127.0.0.1", "::1", "localhost"}
 IDLE_LOCK_S = 15 * 60
@@ -188,7 +187,9 @@ class Handler(BaseHTTPRequestHandler):
                 form[name] = {"filename": filename, "data": payload} if filename is not None else \
                     payload.decode("utf-8", "replace")
             return form
-        return {k: v[0] for k, v in parse_qs(raw.decode("utf-8", "replace"), keep_blank_values=True).items()}
+        # "multi" carries every ticked box of a choose-all-that-apply question; everything else is single-valued.
+        return {k: (",".join(v) if k == "multi" else v[0])
+                for k, v in parse_qs(raw.decode("utf-8", "replace"), keep_blank_values=True).items()}
 
     # -- dispatch ----------------------------------------------------------
     def do_HEAD(self):
@@ -330,7 +331,7 @@ class Handler(BaseHTTPRequestHandler):
             sid = intake.editing or intake.current
             if sid is None:
                 return self._send(200, intake_pages.review_page(app.csrf, intake, **kw))
-            return self._send(200, intake_pages.step_page(app.csrf, intake, STEP_BY_ID[sid],
+            return self._send(200, intake_pages.step_page(app.csrf, intake, intake.step_by_id[sid],
                                                           editing=intake.editing is not None, **kw))
         if action == "review":
             return self._send(200, intake_pages.review_page(app.csrf, intake, **kw))
@@ -371,7 +372,7 @@ class Handler(BaseHTTPRequestHandler):
                               "not_sure": AnswerStatus.NOT_SURE, "skip": AnswerStatus.SKIPPED}.get(choice)
                     if status is None:
                         return self._send(400, pages.refused_page("Unknown action."))
-                    value = "done" if choice == "done" else str(form.get("value", ""))
+                    value = "done" if choice == "done" else str(form.get("multi") or form.get("value", ""))
                     was_editing = intake.editing == step_id
                     intake.respond(step_id, status, value)
                     if step_id == "stage_gate" and intake.value("stage_gate") == "later":
@@ -423,7 +424,13 @@ class Handler(BaseHTTPRequestHandler):
                 app.flash.append(("err", "Confirm you're an adult filling this out."))
                 return self._redirect("/")
             nickname = str(form.get("nickname", "")).strip()[:80]
-            ws, intake = intake_service.new_matter(app.store, nickname, synthetic=app.header.mode != "real")
+            flow = str(form.get("flow", "housing"))
+            try:
+                ws, intake = intake_service.new_matter(app.store, nickname, synthetic=app.header.mode != "real",
+                                                       flow=flow)
+            except IntakeError as exc:
+                app.flash.append(("err", str(exc)))
+                return self._redirect("/")
             return self._redirect(f"/n/{ws.client_id}/{intake.matter_id}")
         if path.startswith("/n/"):
             return self._post_intake(path, form)
