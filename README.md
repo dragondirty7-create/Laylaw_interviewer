@@ -27,6 +27,7 @@ laylaw/interviewer/
 laylaw/organize/
   interface.py  read-only export + protocol for a future ORGANIZE stage (case packet lives there)
 docs/RESEARCH_BASIS.md  the Research Basis template
+docs/VOICE_INTERVIEW_KIT.md  interim voice interview runbook (ChatGPT Voice + separate recording)
 tests/
   test_required.py     the 11 tests required by the Claude Code handoff
   test_repair_pass.py  corrections, controls, criminal path, preflight, propositions,
