@@ -2,3 +2,12 @@ __pycache__/
 *.pyc
 .pytest_cache/
 laylaw-data/
+
+# Never commit secrets or client data
+.env
+.env.*
+*.sqlite3
+*.sqlite3-*
+*.enc
+vault/
+data/

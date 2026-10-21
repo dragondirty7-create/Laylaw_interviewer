@@ -19,10 +19,22 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install test dependencies
-        run: python -m pip install --upgrade pip pytest
-      - name: Run the full test suite
+      - name: Install test and web dependencies
+        run: python -m pip install --upgrade pip pytest "flask>=3.0,<4" "cryptography>=42" "waitress>=3.0"
+      - name: Run the full test suite (plain store)
         run: python -m pytest -q
+      - name: Run the engine suite on the encrypted store
+        env:
+          LAYLAW_TEST_STORE: encrypted
+        run: python -m pytest -q
+      - name: No secrets or data directories committed
+        run: |
+          if git ls-files | grep -Ei '(^|/)(\.env|laylaw-data|data/vault|.*\.sqlite3|.*\.enc)$'; then
+            echo "Data or secret files are tracked" && exit 1
+          fi
+          if git grep -nE 'LAYLAW_MASTER_KEY *= *[A-Za-z0-9_-]{40,}' -- . ':!tests'; then
+            echo "A master key appears in source" && exit 1
+          fi
       - name: Naming check (Laylaw only; no legacy project name)
         run: |
           # The legacy name is matched by a character class so it never appears in this repo.
