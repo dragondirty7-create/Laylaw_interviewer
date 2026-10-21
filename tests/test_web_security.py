@@ -105,6 +105,14 @@ def answer(c, iid, text=None, action="answer"):
     return c.post(f"/interviews/{iid}/answer", data=data, base_url=BASE)
 
 
+def post_draft(c, iid, text, revision=None):
+    html = page(c, f"/interviews/{iid}").get_data(as_text=True)
+    if revision is None:
+        revision = re.search(r'data-draft-rev="([^"]*)"', html).group(1)
+    return c.post(f"/interviews/{iid}/draft", json={"text": text, "revision": revision},
+                  headers={"X-CSRF-Token": _field(html, "csrf_token")}, base_url=BASE)
+
+
 def upload(c, iid, files):
     html = page(c, f"/interviews/{iid}").get_data(as_text=True)
     data = {"csrf_token": _field(html, "csrf_token"),
@@ -357,9 +365,7 @@ def test_each_client_resumes_correctly_through_the_ui(env):
         html, _ = form_of(c, iid)
         pending = re.search(r'class="question">(.*?)</label>', html, re.S).group(1)
         # Type a draft, then save-and-finish-later, then sign out.
-        csrf = csrf_of(c)
-        assert c.post(f"/interviews/{iid}/draft", json={"text": f"half-typed {user}"},
-                      headers={"X-CSRF-Token": csrf}, base_url=BASE).get_json() == {"saved": True}
+        assert post_draft(c, iid, f"half-typed {user}").get_json() == {"saved": True}
         r = answer(c, iid, text=f"half-typed {user}", action="later")   # textarea contents are posted too
         assert r.status_code == 302 and "m=saved" in r.headers["Location"]
         c.post("/logout", data={"csrf_token": csrf_of(c)}, base_url=BASE)
@@ -437,8 +443,7 @@ def test_nothing_readable_at_rest(env):
     through_preflight(a, ia)
     answer(a, ia, f"Fictional account {SENTINEL} with a unique phrase.")
     upload(a, ia, [(f"{SENTINEL}-name.txt", f"file body {SENTINEL}".encode())])
-    a.post(f"/interviews/{ia}/draft", json={"text": f"draft {SENTINEL}"},
-           headers={"X-CSRF-Token": csrf_of(a)}, base_url=BASE)
+    assert post_draft(a, ia, f"draft {SENTINEL}").status_code == 200
     blob = _all_bytes(env["data"])
     for secret in (SENTINEL, "Alex Fictional", "Blair Fictional", "CASE-FICTIONAL", "library", "exchange"):
         assert secret.encode() not in blob, secret
@@ -503,8 +508,8 @@ def test_logs_never_contain_content_tokens_or_keys(env, caplog):
     upload(a, ia, [(f"{SENTINEL}.pdf", f"%PDF {SENTINEL}".encode())])
     rid = record_ids(a, ia)[0]
     page(a, f"/interviews/{ia}/uploads/{rid}")
+    assert post_draft(a, ia, SENTINEL).status_code == 200
     csrf = csrf_of(a)
-    a.post(f"/interviews/{ia}/draft", json={"text": SENTINEL}, headers={"X-CSRF-Token": csrf}, base_url=BASE)
     b = browser(env)
     login(b, "blair.fictional", PW_B)
     page(b, f"/interviews/{ia}/uploads/{rid}")                               # denied attempt gets logged
@@ -585,3 +590,79 @@ def test_signing_in_again_ends_the_previous_session(env):
     assert page(replay, "/home").status_code == 302
     assert page(c, "/home").status_code == 200
     del pre_page
+
+
+# ============================================================ draft autosave vs. stale pages
+def draft_rev(html):
+    return re.search(r'data-draft-rev="([^"]*)"', html).group(1)
+
+
+def test_stale_page_draft_is_refused_and_never_overwrites_newer_question(env):
+    phone, desk = browser(env), browser(env)
+    login(phone, "alex.fictional", PW_A)
+    iid = start(phone)
+    through_preflight(phone, iid)
+    old_html = page(phone, f"/interviews/{iid}").get_data(as_text=True)
+    old_rev = draft_rev(old_html)
+
+    # The desktop answers the question the phone is still showing, then starts a draft.
+    login(desk, "alex.fictional", PW_A)
+    answer(desk, iid, "A fictional account about a library visit.")
+    new_rev = draft_rev(page(desk, f"/interviews/{iid}").get_data(as_text=True))
+    assert new_rev != old_rev
+    assert post_draft(desk, iid, "desk draft for the new question").status_code == 200
+
+    # The phone's autosave from the old page is refused with a conflict.
+    r = post_draft(phone, iid, "phone text typed for the old question", revision=old_rev)
+    assert r.status_code == 409 and r.get_json() == {"error": "stale"}
+
+    for c in (desk, phone):
+        html = page(c, f"/interviews/{iid}").get_data(as_text=True)
+        assert "desk draft for the new question" in html
+        assert "phone text typed for the old question" not in html
+
+
+def test_draft_with_missing_or_forged_revision_is_refused(env):
+    c = browser(env)
+    login(c, "alex.fictional", PW_A)
+    iid = start(c)
+    for rev in ("", "0" * 32):
+        assert post_draft(c, iid, "x", revision=rev).status_code == 409
+    html = page(c, f"/interviews/{iid}").get_data(as_text=True)
+    r = c.post(f"/interviews/{iid}/draft", json={"text": "x", "revision": 7},
+               headers={"X-CSRF-Token": _field(html, "csrf_token")}, base_url=BASE)
+    assert r.status_code == 400
+
+
+def test_draft_for_an_earlier_question_is_not_shown_under_the_next(env):
+    c = browser(env)
+    login(c, "alex.fictional", PW_A)
+    iid = start(c)
+    through_preflight(c, iid)
+    old_rev = draft_rev(page(c, f"/interviews/{iid}").get_data(as_text=True))
+    answer(c, iid, "A fictional account about a park.")
+    # Simulate a late write that lands after the answer cleared the draft.
+    env["store"].workspace(env["ids"]["alex.fictional"]).save_draft(iid, "left over text", old_rev)
+    assert "left over text" not in page(c, f"/interviews/{iid}").get_data(as_text=True)
+
+
+def test_draft_revision_is_the_same_on_every_device(env):
+    a1, a2 = browser(env), browser(env)
+    login(a1, "alex.fictional", PW_A)
+    iid = start(a1)
+    login(a2, "alex.fictional", PW_A)
+    h1 = page(a1, f"/interviews/{iid}").get_data(as_text=True)
+    h2 = page(a2, f"/interviews/{iid}").get_data(as_text=True)
+    assert draft_rev(h1) == draft_rev(h2)
+    assert post_draft(a1, iid, "typed on one device").status_code == 200
+    assert "typed on one device" in page(a2, f"/interviews/{iid}").get_data(as_text=True)
+
+
+def test_store_draft_revision_binding(env):
+    ws = env["store"].workspace(env["ids"]["alex.fictional"])
+    c = browser(env)
+    login(c, "alex.fictional", PW_A)
+    iid = start(c)
+    ws.save_draft(iid, "bound text", "rev-one")
+    assert ws.load_draft(iid, "rev-one") == "bound text"
+    assert ws.load_draft(iid, "rev-two") == ""

@@ -190,6 +190,13 @@ def create_app(overrides: dict | None = None) -> Flask:
         basis = f"{session.interview_id}|{len(session.turns)}|{session.pending.text if session.pending else ''}"
         return hmac.new(g.auth.csrf.encode(), basis.encode("utf-8"), hashlib.sha256).hexdigest()[:32]
 
+    def draft_revision(session) -> str:
+        """Identifies the question a draft belongs to, the same on every device.
+        Save-and-finish-later turns are left out: they keep the same question pending."""
+        answered = sum(1 for t in session.turns if t.control != "save_later")
+        basis = f"{session.interview_id}|{answered}|{session.pending.text if session.pending else ''}"
+        return hashlib.sha256(basis.encode("utf-8")).hexdigest()[:32]
+
     def display_name() -> str:
         return g.ws.load_profile().get("display_name") or "there"
 
@@ -293,12 +300,13 @@ def create_app(overrides: dict | None = None) -> Flask:
                 question = session.next_question()       # saves the pending question
                 if question is not None and session.pending is not None:
                     g.ws.save_prompt(iid, session.pending.text, question)
-            draft = g.ws.load_draft(iid)
+            draft = g.ws.load_draft(iid, draft_revision(session)) if question else ""
             records = [{"id": r.id, "name": r.filename or r.label} for r in session.records]
             blocked = question is None and session.status != SessionStatus.CLOSED
             return render_template(
                 "interview.html", s=summarize(session), question=question, draft=draft, records=records,
                 qtoken=question_token(session) if question else "",
+                draft_rev=draft_revision(session) if question else "",
                 safety=session.status == SessionStatus.PAUSED_FOR_SAFETY, blocked=blocked,
                 done=session.status == SessionStatus.CLOSED, flash=request.args.get("m"),
                 max_mb=MAX_FILE_BYTES // (1024 * 1024), exts=", ".join(sorted(ALLOWED_EXTENSIONS)))
@@ -331,9 +339,10 @@ def create_app(overrides: dict | None = None) -> Flask:
             elif action == "later":
                 # Keep whatever they had typed as the draft, so it is there when they come back.
                 unsent = (request.form.get("answer") or "")[:MAX_ANSWER_CHARS]
+                revision = draft_revision(session)
                 session.save_and_finish_later()
                 if unsent.strip():
-                    g.ws.save_draft(iid, unsent)
+                    g.ws.save_draft(iid, unsent, revision)
                 g.ws.clear_prompt(iid)
                 accounts.audit("interview_saved_for_later", g.auth.user_id, g.auth.client_id, iid)
                 return redirect(url_for("home", m="saved"))
@@ -362,13 +371,20 @@ def create_app(overrides: dict | None = None) -> Flask:
         if not INTERVIEW_ID_RE.match(iid) or not g.ws.has_session(iid):
             return jsonify({"error": "not found"}), 404
         body = request.get_json(silent=True) or {}
-        text = body.get("text", "")
-        if not isinstance(text, str) or len(text) > MAX_ANSWER_CHARS:
+        text, revision = body.get("text", ""), body.get("revision", "")
+        if not isinstance(text, str) or len(text) > MAX_ANSWER_CHARS or not isinstance(revision, str):
             return jsonify({"error": "invalid"}), 400
-        if text.strip():
-            g.ws.save_draft(iid, text)
-        else:
-            g.ws.clear_draft(iid)
+        with client_lock(g.auth.client_id):
+            session = own_interview(iid)
+            # A draft from a page showing an older question (another tab or device moved
+            # the interview on) is refused, never applied to the current question.
+            if session.pending is None or not hmac.compare_digest(
+                    revision.encode(), draft_revision(session).encode()):
+                return jsonify({"error": "stale"}), 409
+            if text.strip():
+                g.ws.save_draft(iid, text, revision)
+            else:
+                g.ws.clear_draft(iid)
         return jsonify({"saved": True})
 
     # ------------------------------------------------------------- uploads

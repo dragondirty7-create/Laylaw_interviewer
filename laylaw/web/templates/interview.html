@@ -20,7 +20,7 @@
 <p>This interview can't continue until the person helping you confirms it's set up for the right person and case. Your answers so far are saved.</p>
 {% else %}
 <h1 class="visually-hidden">Current question</h1>
-<form method="post" action="{{ url_for('answer', iid=s.id) }}" class="card" id="answer-form" data-draft-url="{{ url_for('save_draft', iid=s.id) }}">
+<form method="post" action="{{ url_for('answer', iid=s.id) }}" class="card" id="answer-form" data-draft-url="{{ url_for('save_draft', iid=s.id) }}" data-draft-rev="{{ draft_rev }}">
   <input type="hidden" name="csrf_token" value="{{ csrf }}">
   <input type="hidden" name="qtoken" value="{{ qtoken }}">
   <label for="answer" class="question">{% for para in question.split('\n\n') %}<span class="para">{{ para }}</span>{% endfor %}</label>

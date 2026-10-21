@@ -145,13 +145,25 @@ class EncryptedClientWorkspace(ClientWorkspace):
         return sorted(p.stem for p in d.glob("*.enc")) if d.exists() else []
 
     # -- drafts (unsent answer text, so a long answer survives a closed tab) --
-    def save_draft(self, session_id: str, text: str) -> None:
+    # Each draft is bound to the question revision it was typed for, so text typed
+    # under one question is never shown under another.
+    def save_draft(self, session_id: str, text: str, revision: str) -> None:
         path = self._obj("drafts", f"{_check_id(session_id, 'session id')}.enc")
-        self._seal_to(path, "draft", session_id, text.encode("utf-8"))
+        payload = json.dumps({"revision": revision, "text": text})
+        self._seal_to(path, "draft", session_id, payload.encode("utf-8"))
 
-    def load_draft(self, session_id: str) -> str:
+    def load_draft(self, session_id: str, revision: str) -> str:
         path = self._obj("drafts", f"{_check_id(session_id, 'session id')}.enc")
-        return self._open_from(path, "draft", session_id).decode("utf-8") if path.exists() else ""
+        if not path.exists():
+            return ""
+        raw = self._open_from(path, "draft", session_id).decode("utf-8")
+        try:
+            stored = json.loads(raw)
+        except ValueError:
+            return raw                      # draft saved before revisions existed
+        if not isinstance(stored, dict) or "revision" not in stored:
+            return raw
+        return stored.get("text", "") if stored["revision"] == revision else ""
 
     def clear_draft(self, session_id: str) -> None:
         path = self._obj("drafts", f"{_check_id(session_id, 'session id')}.enc")

@@ -16,19 +16,26 @@
   var status = document.getElementById("draft-status");
   var csrf = form.querySelector('input[name="csrf_token"]').value;
   var url = form.getAttribute("data-draft-url");
-  var timer = null, last = box.value, inflight = false;
+  var revision = form.getAttribute("data-draft-rev");
+  var timer = null, last = box.value, inflight = false, stale = false;
 
   function save() {
     timer = null;
-    if (inflight || box.value === last) return;
+    if (stale || inflight || box.value === last) return;
     var text = box.value;
     inflight = true;
     fetch(url, {
       method: "POST", credentials: "same-origin", cache: "no-store",
       headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
-      body: JSON.stringify({ text: text })
+      body: JSON.stringify({ text: text, revision: revision })
     }).then(function (r) {
       if (r.status === 401) { status.textContent = "You've been signed out. Copy your text, then sign in again."; return; }
+      if (r.status === 409) {
+        // Never overwrite a newer question's draft. Keep the text on screen.
+        stale = true;
+        status.textContent = "This interview changed on another device. Your text was not applied. Copy it, then reload the page.";
+        return;
+      }
       if (r.ok) { last = text; status.textContent = "Draft saved"; }
       else { status.textContent = "Couldn't save the draft just now."; }
     }).catch(function () {
@@ -39,7 +46,7 @@
     });
   }
   function schedule() { if (timer) clearTimeout(timer); timer = setTimeout(save, 1500); }
-  box.addEventListener("input", function () { status.textContent = ""; schedule(); });
+  box.addEventListener("input", function () { if (!stale) { status.textContent = ""; schedule(); } });
   box.addEventListener("keydown", function (e) {
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
