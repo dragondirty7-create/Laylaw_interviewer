@@ -19,7 +19,7 @@ and are history: nothing in them is an open task unless this page lists it.
 ## 1. Where the code is
 
 `main` is still at `eaf01c8` (PR #1, 2026-09-28). Since then, work has been split across six open PRs.
-The branch **`integrate/one-laylaw`** combines all of them so there is one version to run, test and
+The branch **`integrate/one-laylaw`** ([PR #14](https://github.com/dragondirty7-create/Laylaw_interviewer/pull/14), draft) combines all of them so there is one version to run, test and
 review. Combined result: **218 tests pass**, and **217 pass + 1 skipped** when the engine suite is re-run
 on the encrypted store. That is exactly the sum of the separate stacks (97 engine + 34 web + 87 local,
 intake and supervision), so no test was lost. No Python file conflicted. Only the docs and config
@@ -74,7 +74,9 @@ be reverted on the integration branch before it merges.
 ## 4. Next steps
 
 Each one is its own PR from `main` (after this integration lands) or from `integrate/one-laylaw`.
-Soul reviews each before the next starts. The briefs are written to hand to Claude Code.
+Soul reviews each before the next starts. Ready-to-run Claude Code briefs are in
+[`docs/briefs/`](docs/briefs/): open a Claude Code session on this repo and say *"Read
+`docs/briefs/A-lighter-questions.md` and do it."*
 
 - **A. Lighter, smoother questions** (engine). Fix the "No, that's all." loop. Ask only the follow-ups
   that matter for that kind of fact and are still missing. Move the "anything to document this?"
