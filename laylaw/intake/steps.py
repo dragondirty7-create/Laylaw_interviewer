@@ -25,7 +25,7 @@ YES_NO_UNSURE = (("yes", "Yes"), ("no", "No"), ("not_sure", "I'm not sure"))
 class Step:
     id: str
     prompt: str
-    kind: str  # "text" | "long" | "choice" | "date" | "upload"
+    kind: str  # "text" | "long" | "choice" | "multi" | "date" | "upload"
     help: str = ""
     example: str = ""
     choices: tuple[tuple[str, str], ...] = ()
@@ -39,6 +39,8 @@ class Step:
     tags: frozenset = field(default_factory=frozenset)
     #: 1 for the light first pass, 2 for the deeper questions that follow.
     stage: int = 2
+    #: Choice pre-selected on the page when nothing has been answered yet (for example "not_sure").
+    default: str = ""
 
 
 def _is(step_id: str, *values: str) -> Callable[[dict], bool]:
