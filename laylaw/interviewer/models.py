@@ -202,6 +202,11 @@ class Fact:
     sequence_hint: Optional[str] = None     # "before X", "after Y"
     possible_records: list[str] = field(default_factory=list)  # SupportingRecord ids
     open_questions: list[str] = field(default_factory=list)
+    # The interviewee's turn that gave the basis of knowledge, and how it came to
+    # cover this item: own_words | answered | confirmed_all | confirmed_except |
+    # unspecified. None while the basis is still unknown and unasked.
+    source_turn: Optional[int] = None
+    source_scope: Optional[str] = None
 
     def __post_init__(self):
         if self.kind is None:

@@ -5,7 +5,7 @@ reads it before starting and updates it when they finish. The Drive *PROJECT IND
 here instead of keeping its own copy. Older handoff notes are in [`docs/handoffs/`](docs/handoffs/)
 and are history: nothing in them is an open task unless this page lists it.
 
-**Last updated:** 2026-10-23 (America/Los_Angeles) by Claude Code: step A (lighter questions) built as a draft PR on top of `integrate/one-laylaw`.
+**Last updated:** 2026-10-23 (America/Los_Angeles) by Claude Code: step A2 P0 (follow-up v2) built as a draft PR stacked on step A's PR #15.
 
 ## Ground rules (unchanged)
 
@@ -82,8 +82,18 @@ Soul reviews each before the next starts. Ready-to-run Claude Code briefs are in
 [`docs/briefs/`](docs/briefs/): open a Claude Code session on this repo and say *"Read
 `docs/briefs/A-lighter-questions.md` and do it."*
 
-- **A. Lighter, smoother questions** (engine). **Built; draft PR awaiting Soul's review** (branch
+- **A. Lighter, smoother questions** (engine). **Built; draft PR #15 awaiting Soul's review** (branch
   `ccr-346c90bc-1umwms`, base `integrate/one-laylaw`). Tests: `tests/test_lighter_questions.py`.
+- **A2. Follow-up v2** (engine; brief in Drive → AI Agent Notes, "Laylaw Brief A2"). **P0 built; draft PR
+  stacked on #15** (branch `ccr-346c90bc-1umwms-a2`). Tests: `tests/test_followup_v2.py`.
+  - Built: one "How do you know about these?" per multi-event answer, a scope check in the person's own
+    words, and no silent inheritance (0.1). "I don't know", "Skip", "I don't understand" (rephrase once,
+    then offer to skip) (0.2). A per-session register so nothing is asked twice (0.3). A recap body made
+    only of the person's words, plus a lint test (0.4).
+  - Skipped (existing tests pin the wording): the new recap/record/closing question wording, and asking
+    the record question after the recap. Listed in the PR for Soul.
+  - Next: P1 (free-recall opener, deferred questions at recap, fatigue, patterns, certainty once) as a
+    second draft PR after Soul's decisions.
 - **B. Case-level document memory** (engine + web). Attach uploads and interviews to one case record.
   Start each interview from a short "what's on file" brief the client confirms or corrects, keeping
   where each fact came from (document or client) separate. Voice-kit checkpoints load into the same case.
