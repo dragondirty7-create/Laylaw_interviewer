@@ -1,261 +1,122 @@
-# Handoff — Rapid Criminal & Supervision Intake (draft, stacked on PR #11)
+# Laylaw: status page
 
-**Date:** 2026-10-15 (America/Los_Angeles) · **From:** Claude → Soul / Michael
-**Answers:** "NEEDS CLAUDE CODE — APPROVED IMPLEMENTATION HANDOFF — 2026-10-15 PDT" and its addenda in the Laylaw Build Notes.
-**ACK LAYLAW RAPID SUPERVISION INTAKE 2026-10-15.** Synthetic data only. **Not merged, not deployed, no real-client use.**
+**This is the one place to check Laylaw's status.** Every agent (Soul, Claude, Codex/Forge, Gemini)
+reads it before starting and updates it when they finish. The Drive *PROJECT INDEX — Laylaw* links
+here instead of keeping its own copy. Older handoff notes are in [`docs/handoffs/`](docs/handoffs/)
+and are history: nothing in them is an open task unless this page lists it.
 
-## Base and dependency
-- Branch `feat/rapid-supervision-intake`, based on PR #11 head `84cf0fc` (which stacks on PR #3). Needs #3 and #11 reviewed first; it reuses #11's intake engine, local app and #3's encrypted vault. No second vault.
+**Last updated:** 2026-10-23 (America/Los_Angeles) by Claude, while bringing every open branch into one.
 
-## What changed
-- **Engine:** the intake now has a `flow` (`housing` default, so #11 behaves exactly as before and old saves load); a `multi` (choose-all-that-apply) question kind; a per-step `default` choice.
-- **New flow `supervision`** (`laylaw/intake/supervision_steps.py`): safety and adult check first; matter type defaults to *Not sure* (a skip is also treated as not sure); next required date with exact / approximate / unknown precision and who said it; who said treatment is required, how it was given (signed order / written condition / referral / verbal / proposal / not sure), the paper's exact words kept apart from what the person remembers, and whether it says residential or only treatment. Then, only where relevant: charges copied from paperwork (no account of conduct), supervision kind(s), assessment existence, nonresidential options discussed vs approved, feasibility factors, hold/warrant/hearing status. Under-18 stops the intake.
-- **Outputs** (`supervision_outputs.py`): Rapid Situation Summary, Time-Sensitive Dates, Requirement Source Map, Nonresidential Options Comparison, Evidence & Orders Inventory, Chronology, Open Questions, reviewer topics (questions only). Every value is tagged CLIENT REPORTED / DOCUMENT STATES (as typed in) / OFFICIALLY VERIFIED / CONFLICT / UNKNOWN; Laylaw never sets OFFICIALLY VERIFIED. Conflicts are kept, never resolved. Laylaw's own wording passes the advocacy guard plus a conclusion-word list (eligible, exempt, waiver, violation, should, must…) or nothing renders.
-- **App:** a second start card on the home page; checkboxes for multi questions; supervision review page with basis labels.
+## Ground rules (unchanged)
 
-## Tests
-- `python -m pytest -q`: **184 passed** (154 existing unchanged + 30 new in `tests/test_supervision_intake.py`, named by acceptance letter A–H).
-- Mutation checks: upgrading "treatment" to "residential", dropping the Not-sure default, or tagging typed-in wording as officially verified each turn tests red.
-- Rendered QA: `scripts/visual_qa_supervision.py` in Chromium 1194 at 390×844 and 1280×900, whole flow incl. upload: no horizontal scroll, no console errors, all packet sections present. Screenshots in `docs/screenshots/supervision/`.
-- Naming check clean.
+- **Synthetic data only.** Nothing in this repo is approved for real client data yet.
+- **No merge, deploy or real-client use without Soul's review and Michael's OK.**
+- **The Interviewer engine is the only writer of the factual record.** Other parts call it; they
+  never edit facts themselves.
+- **No case content** in code, tests, issues, PRs, commits, screenshots or logs.
+- Golden rule: *do not make the case better; make the record better.*
 
-## Not done / blockers
-- No legal-rule or eligibility engine (by design until Gemini's authority matrix is independently checked).
-- Classifiers are not involved; conflict detection is keyword-based on residential wording only.
-- Real-data gate unchanged: PR #3 security review and Michael's approval still required.
+## 1. Where the code is
 
-## Next
-1. Soul reviews #3 → #11 → this draft PR, in that order.
-2. Gemini research lands → decide whether any sourced, versioned rules layer is added (outside this intake).
+`main` is still at `eaf01c8` (PR #1, 2026-09-28). Since then, work has been split across six open PRs.
+The branch **`integrate/one-laylaw`** combines all of them so there is one version to run, test and
+review. Combined result: **218 tests pass**, and **217 pass + 1 skipped** when the engine suite is re-run
+on the encrypted store. That is exactly the sum of the separate stacks (97 engine + 34 web + 87 local,
+intake and supervision), so no test was lost. No Python file conflicted. Only the docs and config
+files had to be combined.
 
----
+| Part | Code | From | Soul's latest word |
+|---|---|---|---|
+| Interviewer engine | `laylaw/interviewer/`, `laylaw/organize/` | PR #1 (merged) | Merged; synthetic data only |
+| Hosted web app (sign-in, encrypted per-client storage, uploads) | `laylaw/web/` | PR #5 | **2026-10-21: the primary path for Chelsea on her phone.** Harden it (section 2); no merge under that note |
+| Secure local mode (one computer, encrypted vault) | `laylaw/secure/`, `laylaw/app/`, `laylaw/__main__.py`, `scripts/` | PR #3 | Awaiting security review. 2026-10-21: don't turn it into a second hosted app |
+| Rapid Incident Intake | `laylaw/intake/`, `laylaw/app/intake_pages.py` | PR #11 | 2026-10-21: use it as the **design source** for the web app's phone screens |
+| Rapid Supervision Intake | `laylaw/intake/supervision_*.py`, `flows.py` | PR #12 (draft) | 2026-10-17: received; **not approved for merge or real-client use** |
+| Voice interview kit | `docs/VOICE_INTERVIEW_KIT.md` | PR #13 | Interim runbook; not reviewed yet |
+| Docs refresh | (folded into this page) | PR #4 | Replaced by this page |
 
-# Handoff — Laylaw Rapid Incident Intake MVP (2026-10-08)
+**Left out on purpose:** branch `claude/be-here-later-review-dzzomw`. It is a design review for *Be
+Here Later*, a download manager, and has nothing to do with Laylaw. It should move to its own repo.
 
-Requested in Shared Agent Notes, "2026-10-08 — NEEDS CLAUDE CODE — LAYLAW RAPID INCIDENT INTAKE MVP",
-plus Soul's same-day addendum (two-stage intake, light first screen).
+**How the PRs relate after this lands:** if Soul approves the integration PR, the PRs it contains can be
+closed as merged-through-integration. If Soul wants parts held back (for example #12), those merges can
+be reverted on the integration branch before it merges.
 
-**Branch:** `feat/rapid-incident-intake`, stacked on PR #3 (`feat/secure-local-mode`). Reuses PR #3's
-encrypted vault, workspaces, uploads, audit log and local app; no second case vault.
+## 2. Web app: Soul's 2026-10-21 phone and durability list (PR #5)
 
-## What was built
-
-See `docs/INTAKE.md`. One working flow: create an isolated matter, answer the two-stage questions
-one at a time, add files, review and change answers, view the chronology and evidence inventory,
-and open the referral packet (on screen; see "Export" below).
-
-## Tests (synthetic data only)
-
-- `python -m pytest -q`: **154 passed** (133 from PR #3, 1 new regression test on PR #3, 20 for the intake).
-- Covered: stage-one order with danger first; every choice has "I'm not sure"; no question asks for a
-  legal classification; child questions only when a child was there, capped and explained; the
-  child's words recorded once and never replaced; corrections keep earlier answers; answers that stop
-  applying are set aside; gentle validation; save/resume round trip; chronology basis labels and kept
-  hedges; unknown dates stay unknown; conflicts kept, not resolved; packet sections; packet neutrality
-  (and refusal if Laylaw's wording drifts); the person's own strong words quoted unchanged; matter
-  isolation (storage and URL); originals byte-for-byte with notes beside them; no child details or
-  file bytes in plain text anywhere on disk or in the audit log; deleting one matter leaves others;
-  a full first-time-user flow over HTTP; adult confirmation and CSRF.
-- Two guards were broken on purpose (child words once-only; packet neutrality check); a test failed each time.
-- **Phone check:** the whole flow was driven in Chromium at 390×844 (mobile emulation). No page scrolls
-  sideways. Screenshots: `docs/screenshots/intake/`.
-
-## Fix made to PR #3 along the way
-
-Driving the app in a real browser showed PR #3 refused **every** form in Chrome/Edge, including
-Unlock: `Referrer-Policy: no-referrer` makes Chromium send `Origin: null`, which the origin check
-refuses. Fixed on PR #3's branch (`58abe85`): `same-origin`, still no referrer to other sites, with a
-regression test. The http.client tests could not see this.
-
-## Decisions for Soul / Michael
-
-1. **Export of the packet.** PR #3 disables export for encrypted data, so the packet is on-screen only.
-   The build request asks for an export. Options: keep on-screen/print; or a protected export file.
-2. **Danger asked first**, not fifth as in the addendum's list, so the safety note appears before anything else.
-3. Review of PR #3 (with the browser fix) comes first; this PR depends on it.
-
----
-
-# Handoff — Laylaw, Issue #2: single-user secure local mode
-
-**Date:** 2026-09-29 (America/Los_Angeles)
-**From:** Claude → Soul / Michael
-**Input:** Issue #2 and Soul's priority update (acceptance = Chelsea can actually use the Interviewer).
-**Branch:** `feat/secure-local-mode`, base `eaf01c8fbd96ad4232fdcbffad1f9d0b934270d0` (current `main`).
-**Status:** PR open for Soul's security/code review. **Not merged. Synthetic data only.**
-
-## What was built
-| Issue #2 item | Where | Summary |
+| # | Item | Status |
 |---|---|---|
-| 1 Local-only access | `laylaw/app/server.py` | 127.0.0.1 only (other binds refused in code); one-time launch link → HttpOnly SameSite=Strict cookie; Host check; Origin + CSRF on every POST; no JS, strict CSP, `no-store` |
-| 2 Single-user access gate | `laylaw/secure/vault.py`, `mode.py`, `secrets_store.py` | Passphrase (scrypt n=2^17) **and** device secret in the OS credential store (Windows Credential Manager / macOS Keychain via `keyring`); lockout after 5 failures; idle lock 15 min |
-| 3 Encryption at rest | `vault.py`, `store.py` | Random data key; AES-256-GCM per file, bound to vault id + logical name; opaque HMAC file names; recovery code (256-bit, shown once, confirmed at init) |
-| 4 Audit log | `laylaw/secure/audit.py` | HMAC-chained JSONL + head file; content-free (opaque refs, small codes only; free text rejected); edits/deletes/truncation detected |
-| 5 Retention and deletion | `store.py`, app, CLI | Delete interview (app) / workspace (CLI): overwrite + unlink + index removal; limits documented |
-| 6 Secure export boundary | `store.py`, `pages.py` | Export disabled for encrypted data (refused + audited); outputs on screen only |
-| 7 Real-data mode gate | `mode.py`, `workspace.py` | Vault header mode `real`/`synthetic`; real refuses unless OS store, key present, KDF ≥ 2^15, private permissions, no stray plaintext, audit chain intact; plaintext `WorkspaceStore` refused with `LAYLAW_MODE=real` or in a vault |
-| 8 Tests | `tests/test_secure_local_mode.py` (29), `tests/test_local_app.py` (7) | All listed cases + full HTTP walkthrough of Chelsea's workflow |
-| Usability (Soul update) | app + `scripts/` + `docs/LOCAL_MODE.md` | Launch, unlock, new interview, one question at a time (Answer/Skip/Not sure/Save and finish later), save/exit, resume, encrypted uploads, finish, outputs, delete |
+| 1 | Tie draft autosave to the exact question; reject stale saves | **Done** in `e72f64b` (409 on a stale save, with phone/desktop conflict tests) |
+| 2 | Make saving reliable when the page closes, and test real phone backgrounding | Open |
+| 3 | Clear "Saving… / Saved / Offline, not saved" state with last-saved time and retry | Open |
+| 4 | Port PR #11's phone controls (44px targets, progress, choice cards, Back / Save for later, review page, 320–390px checks) | Open |
+| 5 | Cross-device concurrency tests | Partly done (draft conflicts in `e72f64b`); answer and question advance across devices still to test |
+| 6 | Second sign-in factor (2FA) **before** any real client | Open |
+| 7 | Phone smoke test on a deployed instance with synthetic data | Open (needs a host) |
 
-Engine (`laylaw/interviewer/*`) unchanged except the `WorkspaceStore` guard.
+## 3. Interview problems reported 2026-10-23 (Michael)
 
-## Tests
-`python -m pytest -q`: **133 passed** (97 existing + 29 + 7). CI green on `b9603cf` (3.10 and 3.12):
-https://github.com/dragondirty7-create/Laylaw_interviewer/actions/runs/36631398852
+1. **The interviewer didn't know about Chelsea's filed documents.**
+   - Uploads are stored per *interview* (`uploads/<interview id>/…`), not per case, so a new interview
+     starts with none of them.
+   - Nothing reads what a document says. Uploads are kept and fingerprinted, but no dates, orders or
+     filings are pulled out to shape the questions.
+   - A voice-kit session starts from a blank chat, and the kit gives it no summary of what is on file.
+2. **The flow felt choppy.**
+   - After every fact, `_queue_clarifications` (`laylaw/interviewer/session.py`) queues up to seven
+     follow-ups: when, who else, where, how do you know, how sure, what next, and anything to document it.
+   - **Confirmed bug:** natural "I'm done" answers such as *"No, that's all."* or *"Nope, nothing else."*
+     don't match `_NOTHING_MORE`, so they're recorded as a new fact and trigger the whole set again. Only
+     the bare forms (*"No."*, *"Nothing else."*) end it. First reported 2026-09-29; still open.
+   - The voice kit adds a spoken recap, a "Is anything wrong or missing?" check and a full text
+     checkpoint at the end of every section.
 
-## Finding for Soul (engine, not changed here)
-Answering "What happened next?" with **"No, that's all."** is recorded as a new fact, which queues the
-full follow-up set again, so the interview never ends if she keeps answering that way. "No." and
-"Nothing else." end it correctly. `_NOTHING_MORE` in `session.py` doesn't accept "No, that's all." as
-one phrase. It's a one-line fix, but it's engine behavior, so it's left for your call (next pass or this PR).
+## 4. Next steps
 
-## Still blocking real use
-1. Soul's review of this PR. 2. Setup on Chelsea's own computer and OS account (disk encryption, screen
-lock, `init` run by her, recovery code on paper). 3. Privacy/legal review. See SECURITY.md.
+Each one is its own PR from `main` (after this integration lands) or from `integrate/one-laylaw`.
+Soul reviews each before the next starts. The briefs are written to hand to Claude Code.
 
----
+- **A. Lighter, smoother questions** (engine). Fix the "No, that's all." loop. Ask only the follow-ups
+  that matter for that kind of fact and are still missing. Move the "anything to document this?"
+  question to the end of a section. Smaller, but it changes how every interview feels.
+- **B. Case-level document memory** (engine + web). Attach uploads and interviews to one case record.
+  Start each interview from a short "what's on file" brief the client confirms or corrects, keeping
+  where each fact came from (document or client) separate. Voice-kit checkpoints load into the same case.
+- **C. Web app phone hardening.** Section 2, items 2–6, using PR #11's screens as the design source.
+- **D. Decisions for Michael + Soul (not code):** where the app is hosted and who holds the key,
+  privacy/legal review, and whether local mode (PR #3) stays as a separate option.
 
-# Handoff — Laylaw Interviewer, PR #1 audit repair pass
+## 5. Real-client blockers (all still open)
 
-**Date:** 2026-09-28 (America/Los_Angeles)
-**From:** Claude → Soul / Michael
-**Input:** Soul audit follow-up, HOLD at `fdd7d449` (https://github.com/dragondirty7-create/Laylaw_interviewer/pull/1#issuecomment-5874385241; Drive mirror *Claude Code Handoff — Laylaw Interviewer*).
-**Scope:** the seven audit items only. Architecture, section defaults, and the resolved criminal-path / Build Notes comparison are unchanged. No LLM layer, no new features. Synthetic data only. **Not merged, not deployed.**
+1. Soul's review and merge of the code that will hold the data.
+2. A host that fits `docs/DEPLOY.md`: HTTPS, an encrypted persistent disk, the key in a secret manager,
+   separate encrypted backups, and one process. Vercel functions as-is do not fit.
+3. A data-location decision and a privacy/legal review. Nothing here is covered by attorney-client privilege.
+4. 2FA for the web app.
+5. A synthetic-data smoke test on the deployed instance, in Chelsea's own browser and phone.
+6. Final readiness sign-off (Soul + Michael).
 
-## Branch and commits
-- **Branch:** `feat/interviewer-core` → `main`. PR #1 head was `fdd7d449` (= audit baseline) when this pass started; no newer work existed to preserve.
-- **Repair commits** (in order):
+## 6. Feature requests in the issue tracker (not started)
 
-| Commit | What |
+#6 Protective Order Violation Evidence Log · #7 Reclaim Act abusive-litigation pattern log ·
+#8 Mediation Safety & Notice Check (AB 2789) · #9 Custody Safety Authority Screen (SB 1364) ·
+#10 San Diego D-305 filing preflight. #2 (secure local mode) is implemented in PR #3, pending review.
+
+## 7. Known limitations (unchanged)
+
+- Classifiers are English keyword matching (sources, acknowledgements, danger, advocacy guard): cautious but brittle.
+- No semantic contradiction detection between free-text answers.
+- Hosted web app: whoever holds the master key and the disk can read all data (server-side encryption,
+  not end-to-end); no key rotation tool; no retention or verified-deletion workflow.
+- Local mode: export is disabled, so outputs are viewed on screen only.
+
+## History
+
+| Date | Note |
 |---|---|
-| `b64b626` | Regression tests for the seven findings (fail at `fdd7d449`) |
-| `52de607` | 1. Traceable source text for facts, corrections, alternate accounts |
-| `63ec0d1` | 2. Unknown basis of knowledge stays UNKNOWN |
-| `1103ad1` | 3. Acknowledgements, additions, corrections separated |
-| `352ec58` | 4. Clarifications bound to exact discrepancy id (incl. save/resume) |
-| `00aca9c` | 5. Attributed wording preserved; guard kept for generated advocacy |
-| `127a465` | 6. Immediate danger asked separately; plain "Yes" pauses |
-| `ae5d5b5` | 7. Conflicts labeled by actual field |
-| `a064d5d` | Follow-up edge cases found in self-review (each with a test) |
-| `6f6dfb7` | Docs for the pass (reviewed by Soul: one HOLD, below) |
-| `10aad5c` | 6 follow-up: a skipped immediate-danger question pauses for safety |
-
-- **Final code SHA:** `10aad5cc8e14d3ecab667210aec9dd8d99d9ccb4`. The only later commit is the documentation commit that adds this update (`HANDOFF.md` only). A commit cannot contain its own hash, so that exact final head SHA and its CI runs are recorded in the PR #1 description and the completion comment.
-
-## Files changed since `fdd7d449`
-- **Engine:** `laylaw/interviewer/session.py`, `classify.py`, `guard.py`, `outputs.py`, `paths.py`, `models.py`
-- **New tests:** `tests/test_audit_repairs.py` (31 test functions, 56 cases)
-- **Updated tests:** `tests/test_required.py` — call-site change only: 13 fact-seeding calls moved from `record_fact(text, topic=…)` (now refused without a logged answer) to `record_statement(…)`; no assertion changed. `tests/test_repair_pass.py` — preflight tests updated for the split danger question and its position; one alternate-account call now logs the interviewee's words first; seeding calls as above.
-- **Docs:** `HANDOFF.md`, `README.md`, `SECURITY.md` (one limitation added; real-client restriction unchanged)
-
-## Test results
-- `python -m pytest -q`: **97 passed** locally on Python 3.10 and 3.12 (was 40 before this pass, 96 at `6f6dfb7`). Breakdown: `test_required.py` 18, `test_repair_pass.py` 19, `test_extra.py` 3, `test_audit_repairs.py` 57.
-- **Regression tests catch the original failures:** the final `tests/test_audit_repairs.py` run against the unmodified `fdd7d449` source gives **40 failed, 12 passed**. Failures per item: 1 → 4, 2 → 3, 3 → 12, 4 → 5, 5 → 2, 6 → 10, 7 → 4. The 12 that pass there are deliberate controls for behavior that must not change (explicit firsthand / secondhand / inference / document typing; bare "No" changes nothing; genuine date conflicts keep the date label).
-- The audit's literal reproductions were replayed on the repaired head: generated `record_fact` → `ProvenanceError`; "They were using drugs." → `unknown`; recap "Yes" → fact unchanged, next question "What should I change?"; "Taylor was there." → PEOPLE PRESENT clarified, LOCATION still unresolved; "He was abusive." → all seven outputs render with the wording kept; danger "Yes" → `paused_for_safety`; Library-vs-Park → LOCATION label only.
-- CI naming check (legacy name) clean.
-
-## Status of each audit item
-
-| # | Item | Status | What changed |
-|---|---|---|---|
-| 1 | Traceable source text (audit 4) | **Repaired** | `record_fact`, `correct_fact`, `record_conflicting_account` require an exact slice of a logged answer (`raw_answer_id` + `span`, or a statement found verbatim); otherwise `ProvenanceError` before anything changes. `log_answer(text, question=…)` is the one declared entry for the interviewee's words outside the question flow (kept as a turn with its question); `record_statement` wraps it. Recap/final corrections and document-candidate replies are logged and linked on the `Correction`. Paraphrases are refused on every path. |
-| 2 | Unknown basis (audit 5) | **Repaired** | `classify_source` returns firsthand only when the words establish it (own perception, or own act); otherwise UNKNOWN. "How do you know that?" is queued for UNKNOWN and its answer sets the basis (or leaves it UNKNOWN). UNKNOWN survives all outputs and save/load. |
-| 3 | Ack / addition / correction (audit 1) | **Repaired** | Each check question has a role. A bare acknowledgement never becomes content: it asks one follow-up ("What should I change?", "Which part did I make sound more certain than you meant?", "What did I miss?"); the numbered-item question comes only after substantive words exist. "Anything I missed?" records additions and replaces nothing. A leading "Yes," is sliced off; the full answer stays on the Correction. |
-| 4 | Discrepancy binding (audit 2) | **Repaired** | `PendingQuestion.ref` holds the discrepancy id and is saved/loaded. Answers, skips and "not sure" act on that discrepancy only. Pre-repair saves fall back only when exactly one discrepancy is open for the fact; with several, nothing is resolved and the answer is kept as a note. |
-| 5 | Attributed wording vs guard (audit 3) | **Repaired** | The guard takes `attributed` wording (`InterviewSession.attributed_texts()`: answers, statements, fact fields, corrections, intake, requests, document findings/candidates, interviewee-mentioned records). Only attributed strings that would themselves trip a pattern are set aside, verbatim. All renderers and `_emit` use it; Fact Table/Timeline are checked value by value. Engine-authored advocacy still raises. |
-| 6 | Immediate danger (audit 6) | **Repaired** (skip follow-up `10aad5c`) | Preflight asks "Is anyone in immediate danger right now?" alone, then "Is there another urgent concern we should know about before we start?". Anything but a clear no ("Yes", "Maybe", "not sure", or **skip**) pauses for safety and is kept as intake (skip as `status="skipped"`, never read as "no"); the safety check is the next question, the pause survives save/reload, and the danger question isn't re-asked after the safety check. "No"/"not yet" to the safety check keeps the pause; "No, I'm safe now" resumes. Non-danger urgency stays administrative intake. |
-| 7 | Conflict labels (audit 7) | **Repaired** | `outputs.discrepancy_label()` names the actual field (DATE, LOCATION, PEOPLE PRESENT, SEQUENCE, ACCOUNT) in the Fact Table, Timeline, Open Questions and Interview Record. |
-
-## Final review follow-up (Soul, at `6f6dfb7`)
-- **Finding:** a typed or API `skip` on the immediate-danger question was recorded and flagged but left the session ACTIVE, so ordinary preflight continued. Everything else in the pass was reviewed as consistent.
-- **Fix (`10aad5c`):** skip now takes the same path as any non-"no" answer: intake `status="skipped"`, a safety note and open question, `PAUSED_FOR_SAFETY`, and the existing safety check next. A clear "No" is unchanged. No redesign of preflight or the safety flow.
-- **Test:** `test_6_skipping_the_danger_question_pauses_and_is_not_treated_as_safe` (API and typed skip) asserts the skipped intake item, the pause, the safety question next, the pause after save/reload, and that ordinary preflight resumes only after the safety check. It fails on the `6f6dfb7` code (2 of 2 cases; the session stayed ACTIVE) and passes now.
-- **Results:** 97 passed locally (3.10, 3.12). CI on `10aad5cc8e14d3ecab667210aec9dd8d99d9ccb4`, all jobs success (3.10 and 3.12; full suite and naming check):
-  - pull_request: https://github.com/dragondirty7-create/Laylaw_interviewer/actions/runs/36466587708
-  - push: https://github.com/dragondirty7-create/Laylaw_interviewer/actions/runs/36466582003
-
-## Remaining limitations
-- **Real-client use remains blocked.** No authentication, authorization, or encryption at rest (see `SECURITY.md`). This pass does not change that boundary; this is a synthetic-data prototype.
-- **Attribution is caller-declared.** `log_answer` / `record_statement` accept the words the caller says the interviewee gave, with the question asked. The engine refuses untraceable and paraphrased text, but it cannot authenticate who typed an answer; that belongs with the authentication prerequisite.
-- **Classifiers remain English keyword matching** (sources, acknowledgements, danger/safety, advocacy). They lean cautious — any non-"no" to the danger question pauses — but can misread unusual phrasing. The advocacy guard remains a backstop, not a substitute for review.
-- **Firsthand detection is conservative:** some firsthand accounts without a perception/action cue ("The car was blue.") are UNKNOWN until the interviewee answers "How do you know that?". That is intended.
-- **Question volume** is unchanged (the LLM layer and question prioritization stay deferred per the audit).
-- Prior items still stand: no semantic contradiction detection between free-text answers; correction content is the interviewee's correction sentence, not a merged restatement; next-hearing dates appear in the Timeline.
-
-## Next recommended step
-1. Soul's final review of PR #1 at the final head recorded in the PR description and completion comment. PR #1 stays open and unmerged until then.
-2. If accepted, merge as a clearly documented synthetic-data library. Real-client use waits for the `SECURITY.md` prerequisites.
-3. Then decide on the deferred items: the LLM conversation layer (engine stays the only writer of the record) and question prioritization.
-
----
-
-# Previous pass (for history) — PR #1 repair pass before the audit
-
-**Date:** 2026-09-28 (America/Los_Angeles)
-**From:** Claude (Claude Code) → Soul / Michael
-**Sources of truth:** *Laylaw Interviewer — Canonical Specification*; *Claude Code Handoff — Laylaw Interviewer*; *Laylaw — Interviewer Agent, Client Workspaces & Criminal Defense — Build Notes* (read 2026-09-28, after it was shared); the repair-pass instructions (2026-09-28).
-
-## Repo, branch, commits
-- **Repo:** https://github.com/dragondirty7-create/Laylaw_interviewer
-- **Branch:** `feat/interviewer-core` → `main`. **PR:** https://github.com/dragondirty7-create/Laylaw_interviewer/pull/1 (not merged)
-- **Code head commit:** `28a3c1c` (Build Notes alignment). It follows `d119955` (the repair pass). Commits after `28a3c1c` change only `HANDOFF.md`.
-- **Previous head:** `b6faa7e` (pass 1).
-
-## Tests
-`python -m pytest -q`: **40 passed**, run locally on Python 3.11. Breakdown: `test_required.py` 18 (the 11 required tests, with test 2 run for 7 date phrasings, plus one hedging case), `test_repair_pass.py` 19, `test_extra.py` 3.
-Mutation check: I disabled 19 rules one at a time and **each change made a test fail**. The 14 repair-pass rules are listed below. The 5 Build Notes rules are: workspace gate, "not sure" is not confirmation, summary separation, notes-aligned family default, and no safety section by default. The rules: correction keeps the original, control detection, save-later pending, criminal default, proposition split, location overwrite, witness typing, family default, candidate overwrite, intake-as-fact, strict item targeting, paraphrase refusal, research review gate, final-check correction.
-An end-to-end demo run found 2 bugs, both fixed with regression tests: a bare "No" was recorded as a requested outcome, and a hedge didn't cover the date in the same statement.
-
-## Files changed (since `b6faa7e`)
-- **Engine:** `laylaw/interviewer/session.py`, `models.py`, `classify.py`, `outputs.py`, `paths.py`
-- **New:** `laylaw/interviewer/research_basis.py`, `laylaw/organize/__init__.py`, `laylaw/organize/interface.py`, `docs/RESEARCH_BASIS.md`, `SECURITY.md`, `.github/workflows/tests.yml`, `tests/test_repair_pass.py`
-- **Updated:** `tests/test_extra.py` (criminal-path test moved to the new section names), `README.md`, `HANDOFF.md`
-- `tests/test_required.py` is **unchanged**. All 11 required tests still pass.
-
-## Status of each item
-
-| # | Item | Status | Notes |
-|---|---|---|---|
-| 1 | Structured corrections | **Complete** | Recap and final-check corrections create a new fact in the interviewee's words, linked by `correction_of` / `superseded_by`. The original is kept and marked SUPERSEDED. A `Correction` record stores `via`, target, and new version. If the target is unclear, the engine lists the numbered items and asks which one. A number inside a correction ("2 kids were there") is never taken as an item number. The Fact Table, Timeline (original and correction side by side), Interview Record, and Handoff all show both versions. |
-| 2 | Skip / Not sure / Save-and-finish-later | **Complete** | Handled by the engine, either as `skip()` / `not_sure()` / `save_and_finish_later()` or when the whole answer is the command. Turns carry `control`, and no fact is ever created. "Not sure" on a date stores UNKNOWN. Save-for-later keeps the exact pending question and resumes there after reload. Tested for both the opening prompt and clarifying questions. |
-| 3 | Criminal-defense path | **Complete, checked against Build Notes** | Order: charges exactly as on paperwork → court / case number / next hearing → custody or release conditions → attorney or public defender status → procedural history → available records. This matches the Build Notes path and its rule "start with paperwork and procedural facts". An account of the events is only an optional section and is off by default. The notice says plainly that nothing is covered by attorney-client privilege. It uses the same engine. |
-| 4 | Intake / preflight | **Complete** | Neutral questions: workspace confirmation (added from the Build Notes), immediate danger or urgent concern, upcoming hearing or deadline, what they need help with first, and for criminal matters custody and counsel status. Answers are stored as `IntakeItem` administrative metadata, separate from facts. An urgent-danger answer pauses the interview for safety. Preflight is on by default for `start_path`; direct `InterviewSession.start` doesn't use it. |
-| 5 | Proposition splitting | **Complete** | The raw answer is always kept. Propositions are exact `[start, end)` slices of it, each with its own source, certainty, and date. The date comes only from the interviewee's own words in that slice. `record_proposition` accepts only a slice. A statement that isn't an exact slice (e.g. an LLM paraphrase) raises `ProvenanceError`. Splitting uses deterministic sentence boundaries. |
-| 6 | Broader discrepancies | **Complete (detection limits noted)** | Location, people present, sequence, and "account" conflicts keep both recollections and ask the spec's neutral question. The engine never picks a version. Detection covers: the same fact re-answered, facts sharing an `event_key`, conflicting `record_sequence` calls, and `record_conflicting_account`. **It cannot detect contradictions in meaning between free-text answers**; that needs the future LLM layer and is flagged. |
-| 7 | Supporting-source typing | **Complete** | The `SupportingSourceType` labels are document/file, email/text, court record, witness/person, and other. A witness is never stored as a document; it is labeled POTENTIAL WITNESS and sets WITNESS IDENTIFIED. The type carries through to provenance labels and the Evidence Follow-up list. |
-| 8 | Adaptive paths | **Complete** | The 26 canonical family-law sections are preserved in `available_sections`. The default is the Build Notes family path (11 sections; see the Build Notes check below), not all 26. "Specific safety concerns" is never in the default. `suggest_sections` works from the interviewee's own intake words and only suggests; nothing is added automatically. `add_section` and `remove_section` check against the canonical set. |
-| 9 | Document-derived candidates | **Complete** | `propose_document_candidate` stores a candidate that is never merged into the recollection or the timeline. `respond_to_candidate` handles confirm, correct, or reject. Confirm and correct create a linked new version in the client's words; the original is kept. |
-| 10 | Case packet after INTERVIEW | **Complete (interface only, by design)** | The 7 canonical outputs are unchanged. `laylaw.organize.export_for_organize` provides a versioned read-only snapshot, with rules for later stages. An `Organizer` protocol covers overview, timeline, document index, missing-info checklist, and questions for counsel. No ORGANIZE logic is built, and INTERVIEW still refuses the later stages. |
-| 11 | Research Basis | **Complete** | Canonical template in `docs/RESEARCH_BASIS.md`, plus `research_basis.py`. `mark_applied` refuses unreviewed entries and single blog or advocacy sources. Conflicts are flagged and preserved. The engine never reads it. No research entries were added. |
-| 12 | CI | **Complete, passing** | `.github/workflows/tests.yml` runs the full pytest suite on every push and PR (Python 3.10 and 3.12), plus a naming check. The first runs on `c64a802` passed for both push and pull_request: https://github.com/dragondirty7-create/Laylaw_interviewer/actions/runs/36436112134 |
-| 13 | Synthetic-only data | **Complete** | Repo scan: no real names (including the spec's examples), no uploads, logs, screenshots, or snapshots, and no legacy project name. |
-| 14 | Storage security documented | **Complete** | `SECURITY.md` and README: no encryption at rest, no authentication; directory isolation is not a multi-user security boundary; not production-ready. |
-
-## Build Notes check (read after it was shared)
-| Build Notes item | Status |
-|---|---|
-| One shared interviewer, separate family-law and criminal-defense paths, calm tone, one question at a time, remembers answers, resumes | Already in place |
-| Skip, Not sure, Save and finish later | Already in place (item 2) |
-| **Choose the client and case type; confirm whose workspace is open** | **Added now.** The first preflight question confirms the interviewee and case. "No", "skip" or "not sure" stops the interview (`next_question()` returns nothing) until an operator calls `confirm_workspace()`. |
-| Urgency: hearings, deadlines, immediate concerns; criminal custody and lawyer | Already in place (item 4) |
-| "What do you need help with first?" | Already in place, same wording |
-| Documents: multiple uploads; extract dates and details, then client confirms | Uploads and confirmation are in place (item 9). No automatic extractor is built; any extractor must go through `propose_document_candidate`. |
-| **Family-law path: children and current arrangements, existing orders and filed papers, service status, income/expenses/support, relevant events and supporting records** | **Added now.** This is the default family selection: Case basics, Current household (children and arrangements), Current parenting routine, Court orders, Court filings, Service status, Finances, Support history, Specific incidents (neutral prompt that allows "none"), Available records, and Current requested arrangement. Specific safety concerns is never in the default. |
-| Criminal-defense path | Matches (item 3) |
-| **Review the summary together: what the client reported / what documents show / what remains unknown** | **Added now.** Before the final check, a summary review lists these three separately. Unconfirmed document candidates are labeled "not yet confirmed by you". |
-| Case packet (overview, dated timeline, document index, missing-info checklist, questions for counsel) | Interface only, after INTERVIEW (item 10) |
-| Two more client workspaces, separate documents, answers and timelines | Supported by the workspace model and tested for isolation. The actual client names and details still need to be supplied; none were created. |
-| Fictional-case tests (interrupted, save/resume, uploads, workspace separation) | In place |
-| Rename the legacy naming in Drive folders, documents and labels | **Outside this repo.** No legacy name appears in the repo (CI checks). Renaming the Drive items is a separate task after reviewing references and links. |
-
-## Remaining deviations / known gaps
-- **Classifiers are still keyword matching** (English only), including hedges, sources, controls, witness typing, safety, and the advocacy guard. They lean toward caution but will miss unusual phrasing. There is no conversational LLM layer yet.
-- **Question volume:** every proposition gets the full set of follow-up questions (when, who, where, how do you know, what next, records). A long account can produce many questions. Prioritizing by importance is not built.
-- **Correction content** is stored as the interviewee's correction sentence ("It was Tuesday, not Monday"). The engine does not produce a merged restatement, since that would put words in their mouth. A date in the correction's own words is recorded.
-- **Next-hearing dates** are recorded as dated facts (with the question they answered), so they appear in the Timeline alongside past events.
-- **Security:** see `SECURITY.md`. Not for real client data yet.
-
-## Next recommended step
-1. Soul/Michael review PR #1, especially the default section sets, the preflight wording, and the correction flow's "Which numbered item…" prompt.
-2. Supply the two new (real) client workspaces' labels when ready. They stay outside the public repo.
-3. Merge after review. Then choose between (a) an LLM conversation layer over this engine, with the engine staying the only thing that writes the record, and (b) prioritizing clarifying questions by importance to cut question volume.
+| 2026-10-15 | [PR #12 Rapid Supervision Intake](docs/handoffs/2026-10-15-pr12-rapid-supervision-intake.md) |
+| 2026-10-08 | [PR #11 Rapid Incident Intake](docs/handoffs/2026-10-08-pr11-rapid-incident-intake.md) |
+| 2026-09-30 | [State after PR #1 merged; #3 vs #5 comparison](docs/handoffs/2026-09-30-state-after-pr1-merge.md) |
+| 2026-09-29 | [PR #5 web security layer](docs/handoffs/2026-09-29-pr5-web-security-layer.md) |
+| 2026-09-29 | [PR #3 secure local mode](docs/handoffs/2026-09-29-pr3-secure-local-mode.md) |
+| 2026-09-28 | [PR #1 interviewer core and audit repairs](docs/handoffs/2026-09-28-pr1-interviewer-core-audit-repairs.md) |
