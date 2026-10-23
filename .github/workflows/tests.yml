@@ -19,8 +19,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install test and web dependencies
-        run: python -m pip install --upgrade pip pytest "flask>=3.0,<4" "cryptography>=42" "waitress>=3.0"
+      - name: Install test, web and local-mode dependencies
+        run: python -m pip install --upgrade pip pytest "flask>=3.0,<4" "cryptography>=42" "waitress>=3.0" "keyring>=24"
       - name: Run the full test suite (plain store)
         run: python -m pytest -q
       - name: Run the engine suite on the encrypted store
