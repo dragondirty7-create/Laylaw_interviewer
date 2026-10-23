@@ -61,7 +61,7 @@ def refused_page(text: str) -> str:
     return page("Not available", f"<h1>Not available</h1><p>{e(text)}</p>")
 
 
-def home_page(csrf: str, workspaces: list[tuple[str, list[dict]]], *, banner: str, messages) -> str:
+def home_page(csrf: str, workspaces: list[tuple[str, list[dict]]], *, banner: str, messages, extra: str = "") -> str:
     rows = []
     for cid, sessions in workspaces:
         for s in sessions:
@@ -84,7 +84,7 @@ def home_page(csrf: str, workspaces: list[tuple[str, list[dict]]], *, banner: st
             f"<label for=path>Interview type</label><select id=path name=path_name>"
             f"<option value=family_law>Family law</option><option value=criminal_defense>Criminal defense</option>"
             f"</select><label><input type=checkbox name=adult value=yes required> The interviewee is an adult"
-            f"</label><button>Start interview</button></form></div>")
+            f"</label><button>Start interview</button></form></div>") + extra
     return page("Interviews", body, banner=banner, nav=nav_bar(csrf), messages=messages)
 
 

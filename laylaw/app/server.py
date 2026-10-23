@@ -36,12 +36,17 @@ from ..secure.mode import AccessGate
 from ..secure.secrets_store import SecretStore
 from ..secure.store import MAX_UPLOAD_BYTES, SecureStore
 from ..secure.vault import read_header
-from . import pages
+from . import intake_pages, pages
+from ..intake import service as intake_service
+from ..intake.model import AnswerStatus, IntakeError
+from ..intake.packet import PacketError
+from ..intake.steps import STEP_BY_ID
 
 LOOPBACK = {"127.0.0.1", "::1", "localhost"}
 IDLE_LOCK_S = 15 * 60
 MAX_BODY = MAX_UPLOAD_BYTES + 1024 * 1024
 COOKIE = "laylaw"
+_NPATH = re.compile(r"^/n/(matter-[a-f0-9]{12})/(N-[a-f0-9]{12})(/[a-z_]+)?$")
 _PATH = re.compile(r"^/(i|o|d)/([A-Za-z0-9][A-Za-z0-9_-]{0,63})/([A-Za-z0-9][A-Za-z0-9_-]{0,63})(/[a-z_]+)?$")
 
 
@@ -263,8 +268,13 @@ class Handler(BaseHTTPRequestHandler):
     def _get_unlocked(self, path: str):
         app = self.app
         if path == "/":
-            ws = [(cid, app.store.existing_workspace(cid).session_summaries()) for cid in app.store.list_clients()]
-            return self._send(200, pages.home_page(app.csrf, ws, banner=app.banner, messages=app.take_flash()))
+            ws = [(cid, app.store.existing_workspace(cid).session_summaries()) for cid in app.store.list_clients()
+                  if not cid.startswith(intake_service.MATTER_PREFIX)]
+            extra = intake_pages.home_section(app.csrf, intake_service.list_matters(app.store))
+            return self._send(200, pages.home_page(app.csrf, ws, banner=app.banner, messages=app.take_flash(),
+                                                   extra=extra))
+        if path.startswith("/n/"):
+            return self._get_intake(path)
         m = _PATH.match(path)
         if not m or m.group(4):
             return self._send(404, pages.refused_page("Not found."))
@@ -300,8 +310,123 @@ class Handler(BaseHTTPRequestHandler):
         return pages.interview_page(app.csrf, cid, sid, meta=self._meta(s), question=question, state=state,
                                     notice=notice, records=records, banner=app.banner, messages=app.take_flash())
 
+    # -- incident intake -----------------------------------------------------
+    def _intake(self, path: str):
+        m = _NPATH.match(path)
+        if not m:
+            raise FileNotFoundError("not an intake path")
+        cid, mid, action = m.group(1), m.group(2), (m.group(3) or "")[1:]
+        ws = self.app.store.existing_workspace(cid)
+        try:
+            return ws, intake_service.load(ws, mid), action
+        except IntakeError as exc:
+            raise WorkspaceIsolationError(str(exc)) from exc
+
+    def _get_intake(self, path: str):
+        app = self.app
+        ws, intake, action = self._intake(path)
+        kw = {"banner": app.banner, "messages": app.take_flash()}
+        if action == "":
+            sid = intake.editing or intake.current
+            if sid is None:
+                return self._send(200, intake_pages.review_page(app.csrf, intake, **kw))
+            return self._send(200, intake_pages.step_page(app.csrf, intake, STEP_BY_ID[sid],
+                                                          editing=intake.editing is not None, **kw))
+        if action == "review":
+            return self._send(200, intake_pages.review_page(app.csrf, intake, **kw))
+        if action == "packet":
+            try:
+                html = intake_pages.packet_page(app.csrf, intake, integrity=intake_service.verify_evidence(ws, intake),
+                                                **kw)
+            except PacketError:
+                return self._send(500, pages.refused_page("The packet could not be produced because Laylaw's own "
+                                                          "wording failed a neutrality check. Nothing was shown."))
+            app.store.audit.append("packet_viewed", ws=app.store.ref(ws.client_id),
+                                   session=app.store.ref(intake.matter_id))
+            return self._send(200, html)
+        if action == "delete":
+            return self._send(200, intake_pages.delete_page(app.csrf, intake, banner=app.banner))
+        return self._send(404, pages.refused_page("Not found."))
+
+    def _post_intake(self, path: str, form: dict):
+        app = self.app
+        ws, intake, action = self._intake(path)
+        base = f"/n/{ws.client_id}/{intake.matter_id}"
+        try:
+            if action == "answer":
+                choice = str(form.get("action", "answer"))
+                step_id = str(form.get("step", ""))
+                if choice == "later":
+                    intake_service.save(ws, intake)
+                    app.flash.append(("ok", "Saved. Open it from this page when you're ready to continue."))
+                    return self._redirect("/")
+                if choice == "back":
+                    intake.go_back()
+                elif choice == "cancel_edit":
+                    intake.cancel_edit()
+                    intake_service.save(ws, intake)
+                    return self._redirect(f"{base}/review")
+                else:
+                    status = {"answer": AnswerStatus.ANSWERED, "done": AnswerStatus.ANSWERED,
+                              "not_sure": AnswerStatus.NOT_SURE, "skip": AnswerStatus.SKIPPED}.get(choice)
+                    if status is None:
+                        return self._send(400, pages.refused_page("Unknown action."))
+                    value = "done" if choice == "done" else str(form.get("value", ""))
+                    was_editing = intake.editing == step_id
+                    intake.respond(step_id, status, value)
+                    if step_id == "stage_gate" and intake.value("stage_gate") == "later":
+                        intake_service.save(ws, intake)
+                        app.flash.append(("ok", "The essentials are saved. Open this intake again any time to "
+                                                "add more detail."))
+                        return self._redirect("/")
+                    if was_editing and intake.current is None:
+                        intake_service.save(ws, intake)
+                        return self._redirect(f"{base}/review")
+                intake_service.save(ws, intake)
+                return self._redirect(base)
+            if action == "edit":
+                intake.edit(str(form.get("step", "")))
+                intake_service.save(ws, intake)
+                return self._redirect(base)
+            if action == "evidence":
+                back = f"{base}/review" if form.get("back") == "review" else base
+                f = form.get("file")
+                if not isinstance(f, dict) or not f.get("data"):
+                    app.flash.append(("err", "Choose a file to add."))
+                    return self._redirect(back)
+                intake_service.add_evidence(ws, intake, filename=f.get("filename") or "file", data=f["data"],
+                                            category=str(form.get("category", "")),
+                                            source=str(form.get("source", "")),
+                                            date_text=str(form.get("date_text", "")),
+                                            notes=str(form.get("notes", "")))
+                app.flash.append(("ok", "File added and stored encrypted. The original is kept unchanged."))
+                return self._redirect(back)
+            if action == "delete":
+                if str(form.get("confirm", "")).strip() != "DELETE":
+                    app.flash.append(("err", "Type DELETE to confirm."))
+                    return self._redirect(f"{base}/delete")
+                intake_service.delete_matter(app.store, ws.client_id)
+                app.flash.append(("ok", "The intake and its files were deleted."))
+                return self._redirect("/")
+        except IntakeError as exc:
+            app.flash.append(("err", str(exc)))
+            return self._redirect(base)
+        except ValueError as exc:  # upload size limit
+            app.flash.append(("err", str(exc)))
+            return self._redirect(base)
+        return self._send(404, pages.refused_page("Not found."))
+
     def _post_unlocked(self, path: str, form: dict):
         app = self.app
+        if path == "/intake/new":
+            if form.get("adult") != "yes":
+                app.flash.append(("err", "Confirm you're an adult filling this out."))
+                return self._redirect("/")
+            nickname = str(form.get("nickname", "")).strip()[:80]
+            ws, intake = intake_service.new_matter(app.store, nickname, synthetic=app.header.mode != "real")
+            return self._redirect(f"/n/{ws.client_id}/{intake.matter_id}")
+        if path.startswith("/n/"):
+            return self._post_intake(path, form)
         if path == "/new":
             try:
                 cid = _check_id(str(form.get("client_id", "")).strip(), "workspace label")

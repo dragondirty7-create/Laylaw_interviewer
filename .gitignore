@@ -11,3 +11,7 @@ laylaw-data/
 *.enc
 vault/
 data/
+
+# Build output
+build/
+*.egg-info/

@@ -11,6 +11,7 @@ Logical layout (never visible on disk):
     ws/<client>/index               -> sessions and uploads in this workspace
     ws/<client>/session/<id>        -> one InterviewSession as JSON
     ws/<client>/upload/<record id>  -> one uploaded file's bytes
+    ws/<client>/record/<kind>/<id>  -> one structured record (for example an incident intake)
 """
 from __future__ import annotations
 
@@ -90,6 +91,10 @@ class SecureStore:
         for sid in ws.list_sessions():
             c = ws.delete_session(sid, _audit=False)
             counts["sessions"] += 1
+            counts["uploads"] += c["uploads"]
+        for kind, rid in ws.list_record_keys():
+            c = ws.delete_record(kind, rid, _audit=False)
+            counts["records"] = counts.get("records", 0) + 1
             counts["uploads"] += c["uploads"]
         self.vault.erase(ws._index_name)
         clients = self._read_json("clients", {})
@@ -191,6 +196,63 @@ class SecureWorkspace:
         counts = {"uploads": len(uploads)}
         if _audit:
             self._audit.append("session_deleted", ws=self.ref, session=self.store.ref(session_id), detail=counts)
+        return counts
+
+    # -- structured records -------------------------------------------------
+    # Small JSON documents other than interview sessions, such as an incident
+    # intake. Stored encrypted like everything else; the audit log records only
+    # the kind and an opaque reference, never the content.
+    _RECORD_KINDS = {"intake"}
+
+    def _record_name(self, kind: str, record_id: str) -> str:
+        if kind not in self._RECORD_KINDS:
+            raise ValueError(f"unknown record kind {kind!r}")
+        return f"ws/{self.client_id}/record/{kind}/{_check_id(record_id, 'record id')}"
+
+    def save_record(self, kind: str, record_id: str, data: dict) -> None:
+        name = self._record_name(kind, record_id)
+        if data.get("client_id") != self.client_id:
+            raise WorkspaceIsolationError("record belongs to another workspace")
+        self._vault.write(name, json.dumps(data).encode("utf-8"))
+        idx = self._index()
+        records = idx.setdefault("records", {}).setdefault(kind, {})
+        new = record_id not in records
+        records[record_id] = {"updated": _now()}
+        self._save_index(idx)
+        if new:
+            self._audit.append("record_created", ws=self.ref, session=self.store.ref(record_id),
+                               detail={"kind": kind})
+
+    def load_record(self, kind: str, record_id: str) -> dict:
+        name = self._record_name(kind, record_id)
+        if record_id not in self._index().get("records", {}).get(kind, {}) or not self._vault.exists(name):
+            raise FileNotFoundError(f"no {kind} {record_id} in workspace {self.client_id}")
+        data = json.loads(self.store._read_bytes(name))
+        if data.get("client_id") != self.client_id:
+            raise WorkspaceIsolationError("stored record does not belong to this workspace")
+        return data
+
+    def list_records(self, kind: str) -> list[str]:
+        return sorted(self._index().get("records", {}).get(kind, {}))
+
+    def list_record_keys(self) -> list[tuple[str, str]]:
+        return [(k, rid) for k, ids in sorted(self._index().get("records", {}).items()) for rid in sorted(ids)]
+
+    def delete_record(self, kind: str, record_id: str, _audit: bool = True) -> dict:
+        idx = self._index()
+        if record_id not in idx.get("records", {}).get(kind, {}):
+            raise FileNotFoundError("no such record")
+        uploads = [rid for rid, meta in idx["uploads"].items() if meta.get("session_id") == record_id]
+        for rid in uploads:
+            self._vault.erase(f"ws/{self.client_id}/upload/{rid}")
+            idx["uploads"].pop(rid, None)
+        self._vault.erase(self._record_name(kind, record_id))
+        idx["records"][kind].pop(record_id, None)
+        self._save_index(idx)
+        counts = {"uploads": len(uploads)}
+        if _audit:
+            self._audit.append("record_deleted", ws=self.ref, session=self.store.ref(record_id),
+                               detail={"kind": kind, **counts})
         return counts
 
     # -- uploads ----------------------------------------------------------
