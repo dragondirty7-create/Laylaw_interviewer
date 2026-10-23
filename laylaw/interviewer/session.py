@@ -43,6 +43,9 @@ FINAL_CHECK_QUESTIONS = [
     "What should we follow up on next?",
 ]
 RECORD_HOOK_QUESTION = "Is there anything that might help document or date this?"
+# Asked once, before the end-of-section recap, when the section has more than one item.
+SECTION_RECORD_HOOK_QUESTION = ("Is there anything that might help document or date what you've told me "
+                                "in this section?")
 SAFETY_QUESTION = (
     "Before we go on: are you safe right now? If you or anyone else is in immediate danger, "
     "please call 911 (or your local emergency number) now. Tell me when you're ready, and "
@@ -309,6 +312,10 @@ class InterviewSession:
             self.status = SessionStatus.ACTIVE
         if self.pending is None:
             self.pending = self._advance()
+        if self.pending and self.pending.kind == "record_hook" and self.pending.field == "section":
+            # Worded when asked, so it fits how much the section now holds.
+            one = len(self._current_facts(self.current_section)) == 1
+            self.pending.text = RECORD_HOOK_QUESTION if one else SECTION_RECORD_HOOK_QUESTION
         self.save()
         if self.pending is None:
             return None
@@ -576,8 +583,7 @@ class InterviewSession:
                 PendingQuestion("procedural", question, facts[0].id if facts else None, field=key)
                 for key, question in spec.followups] + self._recap_questions()
             return
-        for f in facts:
-            self._queue_clarifications(f)
+        self._queue_answer(facts)
 
     def _record_propositions(self, raw: RawAnswer, spans: Optional[list[tuple[int, int]]] = None,
                              spec_question: Optional[str] = None, **tags) -> list[Fact]:
@@ -621,31 +627,66 @@ class InterviewSession:
         if phrase and f.date is None:
             self.set_fact_date(f.id, phrase)
 
-    def _queue_clarifications(self, fact: Fact) -> None:
-        """One question at a time, open-ended, never suggesting an answer."""
-        qs: list[PendingQuestion] = []
+    def _queue_answer(self, facts: list[Fact]) -> None:
+        for i, f in enumerate(facts):
+            self._queue_clarifications(f, first=i == 0, last=i == len(facts) - 1)
+
+    def _queue_clarifications(self, fact: Fact, *, first: bool = True, last: bool = True) -> None:
+        """One question at a time, open-ended, never suggesting an answer.
+
+        Several items from one answer are one account: when, who and where are
+        asked about the first, and "what happened next?" only after the last
+        (the next sentence already said what happened next).
+
+        Only what the answer left out, and only what fits the kind of fact. At
+        most `max_followups` per fact (set per section): the source and
+        certainty checks are always asked, then date, people, place and next,
+        in that priority. They are asked in the usual order. What is left over
+        goes to Open Questions, so nothing is dropped silently."""
         if fact.source == SourceOfKnowledge.REQUEST:
             return
-        if fact.date is None:
+        routine = fact.kind == EventKind.ROUTINE
+        event = not routine and not classify.describes_state(fact.statement)
+        qs: list[PendingQuestion] = []
+        if fact.date is None and first:
             qs.append(PendingQuestion("clarify", "About when was this?", fact.id, "date"))
-        if not fact.people_present:
+        if event and not fact.people_present and first:
             qs.append(PendingQuestion("clarify", "Who else was there?", fact.id, "people_present"))
-        if not fact.location and fact.kind != EventKind.ROUTINE:
-            qs.append(PendingQuestion("clarify", "Where did this happen?", fact.id, "location"))
-        if fact.source in (SourceOfKnowledge.PERSONAL_OBSERVATION, SourceOfKnowledge.UNCERTAIN,
-                           SourceOfKnowledge.UNKNOWN) and not fact.told_by:
+        if event and not fact.location:
+            if first:
+                qs.append(PendingQuestion("clarify", "Where did this happen?", fact.id, "location"))
+            else:
+                self.open_questions.append(f"{fact.id}: not asked, to keep the interview short: "
+                                           f"Where did this happen?")
+        if fact.source in (SourceOfKnowledge.UNCERTAIN, SourceOfKnowledge.UNKNOWN) and not fact.told_by:
             qs.append(PendingQuestion("clarify", "How do you know that?", fact.id, "source"))
         if fact.certainty == Certainty.HEDGED:
             qs.append(PendingQuestion("clarify", CERTAINTY_QUESTION, fact.id, "certainty"))
-        if fact.kind == EventKind.ROUTINE:
+        if last and routine:
             qs.append(PendingQuestion("clarify", "Was there a particular time that was different?",
                                       fact.id, "next"))
-        else:
+        elif last and event:
             qs.append(PendingQuestion("clarify", "What happened next?", fact.id, "next"))
-        qs.append(PendingQuestion("record_hook", RECORD_HOOK_QUESTION, fact.id))
-        # End-of-section check comes after this fact's clarifications. The recap
-        # text itself is built when asked, so it reflects everything recorded.
-        self.queue = [q for q in self.queue if q.kind != "recap"] + qs + self._recap_questions()
+        priority = ["source", "certainty", "date", "people_present", "location", "next"]
+        keep = sorted(qs, key=lambda q: priority.index(q.field))[:max(spec_for(fact.topic).max_followups,
+                                                                       sum(q.field in ("source", "certainty")
+                                                                           for q in qs))]
+        asked = [q for q in qs if q in keep]
+        for q in qs:
+            if q not in keep and q.field != "people_present":   # "who was present" is listed for every fact
+                self.open_questions.append(f"{fact.id}: not asked, to keep the interview short: {q.text}")
+        # The "anything to document this?" question is asked once per section,
+        # just before the end-of-section check; the recap text itself is built
+        # when asked, so it reflects everything recorded.
+        rest = [q for q in self.queue
+                if q.kind != "recap" and not (q.kind == "record_hook" and q.field == "section")]
+        hook = [] if self._record_hook_asked(fact.topic) else [
+            PendingQuestion("record_hook", SECTION_RECORD_HOOK_QUESTION, None, field="section")]
+        self.queue = rest + asked + hook + self._recap_questions()
+
+    def _record_hook_asked(self, section: str) -> bool:
+        return any(t.section == section and t.question in (RECORD_HOOK_QUESTION, SECTION_RECORD_HOOK_QUESTION)
+                   for t in self.turns)
 
     @staticmethod
     def _recap_questions() -> list[PendingQuestion]:
@@ -678,20 +719,25 @@ class InterviewSession:
         elif q.field == "next":
             if not _is_nothing_more(text):
                 raw = self._add_raw_answer(text, turn_index)
-                for nxt in self._record_propositions(raw, sequence_hint=f"after {fact.id}", **tags):
-                    self._queue_clarifications(nxt)
+                self._queue_answer(self._record_propositions(raw, sequence_hint=f"after {fact.id}", **tags))
 
     # ----------------------------------------------------------- supporting sources
     def _apply_record_hook(self, q, text: str, source_type: Optional[SupportingSourceType] = None) -> None:
-        if re.fullmatch(r"(?i)\s*(no|nope|nothing|none|not that i know of|i don'?t think so)\.?\s*", text):
+        if _is_nothing_more(text) or re.fullmatch(r"(?i)\s*(not that i know of|i don'?t think so)\.?\s*", text):
             return
         fact_id = getattr(q, "fact_id", None)
+        related: list[str] = [fact_id] if fact_id else []
+        if getattr(q, "field", None) == "section":
+            fact_id, related = self._section_record_target(text)
         kind = SupportingSourceType(source_type) if source_type else classify.classify_supporting_source(text)
         rec = SupportingRecord(id="R-" + uuid.uuid4().hex[:10], client_id=self.client_id,
                                session_id=self.interview_id, label=f"Mentioned by interviewee: {text}",
                                provenance_type=SUPPORTING_TO_PROVENANCE[kind], source_type=kind,
-                               related_fact_ids=[fact_id] if fact_id else [])
+                               related_fact_ids=related)
         self.records.append(rec)
+        if not fact_id and len(related) > 1:
+            self.open_questions.append(f"{rec.id}: record mentioned for {self.current_section}; "
+                                       f"not yet matched to a single item")
         if fact_id:
             f = self.get_fact(fact_id)
             f.possible_records.append(rec.id)
@@ -699,6 +745,25 @@ class InterviewSession:
                 f.verification = (VerificationStatus.WITNESS_IDENTIFIED if kind == SupportingSourceType.WITNESS
                                   else VerificationStatus.DOCUMENT_LOCATED if kind != SupportingSourceType.OTHER
                                   else VerificationStatus.INTERVIEW_ONLY)
+
+    def _section_record_target(self, text: str) -> tuple[Optional[str], list[str]]:
+        """Which item a record named at the end of a section belongs to: the only
+        item, one the answer names ("item 2"), or the only item whose own words
+        mention the same kind of record ("the text" -> the fact about a text).
+        Otherwise it is linked to the whole section and never guessed."""
+        ids = [f.id for f in self._current_facts(self.current_section)]
+        if len(ids) == 1:
+            return ids[0], ids
+        named = _explicit_target(text, ids)
+        if named:
+            return named, [named]
+        kind = classify.classify_supporting_source(text)
+        if kind != SupportingSourceType.OTHER:
+            same = [f.id for f in self._current_facts(self.current_section)
+                    if classify.classify_supporting_source(f.statement) == kind]
+            if len(same) == 1:
+                return same[0], same
+        return None, ids
 
     # ----------------------------------------------------------- direct recording API
     def record_fact(self, statement: str, *, topic: str, turn_index: Optional[int] = None,
@@ -998,8 +1063,7 @@ class InterviewSession:
             # Paperwork/court items: kept with the question they answered; no incident follow-ups.
             self._record_propositions(raw, spans=spans, spec_question=question, **tags)
             return
-        for f in self._record_propositions(raw, spans=spans, **tags):
-            self._queue_clarifications(f)
+        self._queue_answer(self._record_propositions(raw, spans=spans, **tags))
 
     # ----------------------------------------------------------- corrections
     def _start_correction(self, text: str, via: str, turn_index: int, candidate_ids: list[str],
@@ -1238,11 +1302,20 @@ class InterviewSession:
             raise ModeViolation(f"{stage.value} is a separate Laylaw stage; INTERVIEW does not produce it")
 
 
+# Whole answers that mean "nothing more": an optional leading no/nope/nah, then
+# a "that's all" form ("No, that's all.", "Nope, nothing else.", "That's
+# everything."). Matched with fullmatch, so any added content ("No, then he
+# left.") is still recorded as what it is.
+_DONE = (r"(?:that'?s|that is|i think that'?s|i think that is|i think it'?s|i guess that'?s)"
+         r" (?:it|all|everything|about it|all i (?:have|know|remember|can think of))"
+         r"|nothing (?:else|more)(?: (?:happened|to add|i can think of))?|nothing happened"
+         r"|(?:there'?s|there is) nothing (?:else|more)|not really|i don'?t (?:know|remember)|n/?a"
+         r"|none|nothing")
 _NOTHING_MORE = re.compile(
-    r"(?i)\s*(?:no|nope|none|nothing(?: else)?(?: happened)?|that'?s (?:it|all)|not really|"
-    r"i don'?t (?:know|remember)|n/?a)[.!]?\s*")
-_NO_WORD = (r"(?:no|nope|nah|none|nothing|looks (?:right|good|fine)|that'?s (?:right|correct|it|all)|correct|"
-            r"all good|nothing else|i think (?:that'?s|it'?s) (?:it|all|right))")
+    rf"(?i)\s*(?:(?:no|nope|nah)(?:[\s,.!;:-]+(?:{_DONE}))?|{_DONE})(?:[\s,.!;:-]+(?:thanks|thank you))?[.!]?\s*")
+_NO_WORD = (r"(?:no|nope|nah|none|nothing|looks (?:right|good|fine)|that'?s (?:right|correct|it|all|everything)|"
+            r"that is (?:right|correct|it|all|everything)|correct|all good|nothing (?:else|more)|"
+            r"i think (?:that'?s|it'?s) (?:it|all|right|everything))")
 _NO = re.compile(rf"(?i)\s*{_NO_WORD}(?:[\s,.!;:-]+{_NO_WORD})*[.!]?\s*")
 
 
