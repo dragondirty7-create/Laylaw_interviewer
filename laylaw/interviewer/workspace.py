@@ -55,8 +55,22 @@ def _atomic_write(path: Path, data: bytes) -> None:
 
 
 class WorkspaceStore:
+    """Plaintext storage for synthetic/development use only.
+
+    Refuses to run in real-data mode (LAYLAW_MODE=real) and inside an encrypted
+    vault folder, so real case data can't silently fall back to plaintext.
+    Real data goes through laylaw.secure.store.SecureStore.
+    """
+
     def __init__(self, root: str | os.PathLike):
         self.root = Path(root).resolve()
+        if os.environ.get("LAYLAW_MODE", "").strip().lower() == "real":
+            from ..secure.errors import RealDataModeError
+            raise RealDataModeError("plaintext WorkspaceStore is disabled in real-data mode; "
+                                    "use the encrypted vault (python -m laylaw run)")
+        if (self.root / "vault.json").exists():
+            from ..secure.errors import RealDataModeError
+            raise RealDataModeError("this folder is an encrypted Laylaw vault; plaintext storage is refused here")
         (self.root / "clients").mkdir(parents=True, exist_ok=True)
 
     def workspace(self, client_id: str) -> "ClientWorkspace":
