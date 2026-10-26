@@ -5,7 +5,7 @@ reads it before starting and updates it when they finish. The Drive *PROJECT IND
 here instead of keeping its own copy. Older handoff notes are in [`docs/handoffs/`](docs/handoffs/)
 and are history: nothing in them is an open task unless this page lists it.
 
-**Last updated:** 2026-10-25 (America/Los_Angeles) by Claude Code: Soul's 2026-10-25 review of PR #16 recorded; the offered-skip logging fix is pushed.
+**Last updated:** 2026-10-25 (America/Los_Angeles) by Claude (chat): Michael's go-ahead for A2 P1 and the recap wording, with the brief linked in §4. Earlier the same day, Claude Code recorded Soul's review of PR #16 and pushed the offered-skip logging fix.
 
 ## Ground rules (unchanged)
 
@@ -109,7 +109,8 @@ Soul reviews each before the next starts. Ready-to-run Claude Code briefs are in
        question moves after the recap, prove it's asked once and can't strand new additions.
     6. "Huh?" at an opening prompt, recap or final check is a P1 priority. Never store it as a fact or a
        correction.
-  - Next: P1 as a new draft PR (and the 0.4 wording change as its own draft), when Michael gives the go-ahead.
+  - **Next (Michael's go-ahead, 2026-10-25):** P1 as a new draft PR stacked on #16, then the 0.4 wording change as
+    its own draft stacked on that. Brief: [`docs/briefs/A2-P1-and-recap-wording.md`](docs/briefs/A2-P1-and-recap-wording.md).
 - **B. Case-level document memory** (engine + web). Attach uploads and interviews to one case record.
   Start each interview from a short "what's on file" brief the client confirms or corrects, keeping
   where each fact came from (document or client) separate. Voice-kit checkpoints load into the same case.
