@@ -14,6 +14,7 @@ Security properties (see SECURITY.md for the full list and limits):
 """
 from __future__ import annotations
 
+import hashlib
 import hmac
 import re
 import secrets
@@ -96,6 +97,12 @@ class LaylawApp:
             ws = self.store.existing_workspace(cid)
             self.sessions[key] = ws.load_session(sid)
         return self.sessions[key]
+
+    def question_token(self, s) -> str:
+        """Binds a submitted answer to the exact question on screen, as the web app does
+        (laylaw/web/app.py): an answer from an out-of-date tab never lands on another question."""
+        basis = f"{s.interview_id}|{len(s.turns)}|{s.pending.text if s.pending else ''}"
+        return hmac.new(self.csrf.encode(), basis.encode("utf-8"), hashlib.sha256).hexdigest()[:32]
 
     def take_flash(self) -> list[tuple[str, str]]:
         msgs, self.flash = self.flash, []
@@ -308,8 +315,10 @@ class Handler(BaseHTTPRequestHandler):
                 state = "safety"
             else:
                 state = "ask"
+        qtoken = app.question_token(s) if state in ("ask", "safety") else ""
         return pages.interview_page(app.csrf, cid, sid, meta=self._meta(s), question=question, state=state,
-                                    notice=notice, records=records, banner=app.banner, messages=app.take_flash())
+                                    notice=notice, records=records, banner=app.banner, messages=app.take_flash(),
+                                    qtoken=qtoken)
 
     # -- incident intake -----------------------------------------------------
     def _intake(self, path: str):
@@ -476,6 +485,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(404, pages.refused_page("Not found."))
         if action == "answer":
             choice = form.get("action", "answer")
+            # Refused before anything is recorded or asked: a stale tab, a back button or a double
+            # submit must not answer whatever question is pending now.
+            if s.pending is None or not hmac.compare_digest(str(form.get("qtoken", "")).encode(),
+                                                            app.question_token(s).encode()):
+                app.flash.append(("err", "That page was out of date, so nothing was saved. "
+                                         "This is the current question."))
+                return self._redirect(back)
             if choice == "save_later":
                 s.save_and_finish_later()
                 audit.append("session_saved_for_later", ws=ws_ref, session=s_ref)
@@ -491,8 +507,6 @@ class Handler(BaseHTTPRequestHandler):
                 if not text:
                     app.flash.append(("err", "Type an answer, or choose Skip or Not sure."))
                     return self._redirect(back)
-                if s.pending is None:
-                    s.next_question()
                 s.answer(text)
             return self._redirect(back)
         if action == "resume":

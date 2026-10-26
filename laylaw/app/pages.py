@@ -89,7 +89,7 @@ def home_page(csrf: str, workspaces: list[tuple[str, list[dict]]], *, banner: st
 
 
 def interview_page(csrf: str, cid: str, sid: str, *, meta: dict, question: str | None, state: str,
-                   notice: str | None, records: list[dict], banner: str, messages) -> str:
+                   notice: str | None, records: list[dict], banner: str, messages, qtoken: str = "") -> str:
     base = f"/i/{e(cid)}/{e(sid)}"
     head = (f"<h1>{e(meta['interviewee'])}</h1><p class=muted>Case {e(meta['case_id'])} · "
             f"{e(meta['path'].replace('_', ' '))} · workspace {e(cid)}</p>")
@@ -111,6 +111,7 @@ def interview_page(csrf: str, cid: str, sid: str, *, meta: dict, question: str |
                   "danger right now, call 911.</p>") if state == "safety" else ""
         body = (f"<div class=card><p class=q>{e(question)}</p>{safety}"
                 f"<form method=post action='{base}/answer'>{csrf_field(csrf)}"
+                f"<input type=hidden name=qtoken value='{e(qtoken)}'>"
                 f"<label for=a>Answer</label><textarea id=a name=answer autofocus></textarea>"
                 f"<button name=action value=answer>Answer</button>"
                 f"<button class=plain name=action value=skip formnovalidate>Skip</button>"

@@ -61,6 +61,18 @@ def question_of(page):
     return html.unescape(m.group(1)) if m else None
 
 
+def qtoken_of(page):
+    m = re.search(r"name=qtoken value='([^']*)'", page)
+    return html.unescape(m.group(1)) if m else ""
+
+
+def post_answer(app, c, interview, page=None, **form):
+    """Submit from the page as shown, carrying its question token like a browser would."""
+    if page is None:
+        _, _, page = c.req("GET", interview)
+    return c.req("POST", f"{interview}/answer", {"csrf": app.csrf, "qtoken": qtoken_of(page), **form})
+
+
 @pytest.fixture
 def running(tmp_path):
     ss = MemorySecretStore()
@@ -106,17 +118,17 @@ def test_chelsea_can_run_a_whole_interview(running):
     status, _, page = c.req("GET", interview)
     assert "Jordan Avery (case CASE-FICTIONAL-777)" in question_of(page)
     for answer in ["Yes", "No", "No", "No", "Help with the parenting schedule"]:
-        c.req("POST", f"{interview}/answer", {"csrf": app.csrf, "action": "answer", "answer": answer})
+        post_answer(app, c, interview, action="answer", answer=answer)
     _, _, page = c.req("GET", interview)
     first_topic_q = question_of(page)
     assert first_topic_q and "danger" not in first_topic_q
-    c.req("POST", f"{interview}/answer", {"csrf": app.csrf, "action": "answer",
-                                          "answer": "Pip lives with me during the week. Sam Rowe has weekends."})
+    post_answer(app, c, interview, action="answer",
+                answer="Pip lives with me during the week. Sam Rowe has weekends.")
     _, _, page = c.req("GET", interview)
     pending = question_of(page)
 
     # Save and exit, lock, come back.
-    status, headers, _ = c.req("POST", f"{interview}/answer", {"csrf": app.csrf, "action": "save_later"})
+    status, headers, _ = post_answer(app, c, interview, page=page, action="save_later")
     assert headers["Location"] == "/"
     _, _, page = c.req("GET", "/")
     assert "Saved for later" in page
@@ -142,15 +154,15 @@ def test_chelsea_can_run_a_whole_interview(running):
     assert "Fictional school calendar" in page and "stored encrypted" in page
 
     # Skip and Not sure work from the page.
-    c.req("POST", f"{interview}/answer", {"csrf": app.csrf, "action": "skip"})
-    c.req("POST", f"{interview}/answer", {"csrf": app.csrf, "action": "not_sure"})
+    post_answer(app, c, interview, action="skip")
+    post_answer(app, c, interview, action="not_sure")
 
     # Finish the interview.
     for _ in range(200):
         _, _, page = c.req("GET", interview)
         if "This interview is complete" in page:
             break
-        c.req("POST", f"{interview}/answer", {"csrf": app.csrf, "action": "answer", "answer": "Nothing else."})
+        post_answer(app, c, interview, page=page, action="answer", answer="Nothing else.")
     else:
         pytest.fail("interview did not finish")
 
