@@ -207,11 +207,17 @@ _CONTROL_PATTERNS = {
             r"|i'?d rather not (?:say|answer)|prefer not to (?:say|answer))",
     "not_sure": r"(?:not sure|i'?m not sure|i don'?t know|dunno|i don'?t remember|i can'?t remember"
                 r"|no idea|unsure|i'?m unsure|don'?t know)",
+    # Only ever acted on for follow-up questions: rephrased once, then skipping is offered.
+    "dont_understand": r"(?:huh|what|sorry|pardon|come again|what do you mean(?: by that)?"
+                       r"|i don'?t (?:understand|get it|get that|follow)(?: (?:the|that|this) question)?"
+                       r"|i'?m (?:confused|lost)|confused|(?:i'?m )?not sure what you mean"
+                       r"|(?:can|could) you (?:rephrase|reword|say) (?:that|it|the question)(?: (?:differently|another way))?"
+                       r"|what does that mean)",
 }
 
 
 def detect_control(text: str) -> Optional[str]:
-    t = re.sub(r"[.!]+$", "", text.strip().lower())
+    t = re.sub(r"[.!?]+$", "", text.strip().lower())
     for name, pattern in _CONTROL_PATTERNS.items():
         if re.fullmatch(pattern, t):
             return name

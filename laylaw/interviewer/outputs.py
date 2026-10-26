@@ -70,6 +70,33 @@ def version_note(f: Fact) -> str | None:
     return None
 
 
+RECAP_LABELS = {"date": "when", "people_present": "who was there", "location": "where", "source": "how you know"}
+
+
+def recap_clauses(f: Fact, s: "InterviewSession") -> list[tuple[str, str]]:
+    """What the end-of-section recap says about one item: the interviewee's own
+    words only -- the statement, then each follow-up answer as they gave it.
+    Nothing is reworded, inferred or added (no labels the app worked out)."""
+    out = [("", f.statement)]
+    turns = {t.index: t for t in s.turns}
+    for intent, label in RECAP_LABELS.items():
+        if intent == "source":
+            turn = f.source_turn if f.source_scope in ("answered", "confirmed_all", "confirmed_except") else None
+        else:
+            turn = next((a["turn"] for a in s.asked if a["fact"] == f.id and a["intent"] == intent
+                         and a["outcome"] in ("answered", "dont_know")), None)
+        if turn is not None and turn in turns and turn != f.provenance.turn_index:
+            out.append((label, turns[turn].answer.strip()))
+    return out
+
+
+def recap_line(f: Fact, s: "InterviewSession") -> str:
+    q = (lambda t: f'"{t}"') if _quote_allowed(f, s) else (lambda t: t)
+    first, *rest = recap_clauses(f, s)
+    line = q(first[1]) + "".join(f"; {label}: {q(text)}" for label, text in rest)
+    return f"[{version_note(f)}] {line}" if version_note(f) else line
+
+
 def neutral_fact_line(f: Fact, s: "InterviewSession") -> str:
     parts = [f"[{SOURCE_LABEL[f.source]}]", statement_text(f, s), f"Date: {date_text(f)}"]
     if version_note(f):
@@ -257,9 +284,11 @@ def open_questions(s: "InterviewSession") -> list[str]:
     for f in s.facts:
         if f.status != FactStatus.CURRENT or f.question_context:
             continue
-        if f.date is None or f.date.precision == DatePrecision.UNKNOWN:
+        # "Don't know" is an answer: it is recorded on the item and not listed again here.
+        dont_know = {a["intent"] for a in s.asked if a["fact"] == f.id and a["outcome"] == "dont_know"}
+        if (f.date is None or f.date.precision == DatePrecision.UNKNOWN) and "date" not in dont_know:
             out.append(f"{f.id}: when this happened (not yet known)")
-        if not f.people_present:
+        if not f.people_present and "people_present" not in dont_know:
             out.append(f"{f.id}: who was present (not yet stated)")
     for d in s.discrepancies:
         if d.status == "unresolved":

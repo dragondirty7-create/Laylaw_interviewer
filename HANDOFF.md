@@ -5,7 +5,7 @@ reads it before starting and updates it when they finish. The Drive *PROJECT IND
 here instead of keeping its own copy. Older handoff notes are in [`docs/handoffs/`](docs/handoffs/)
 and are history: nothing in them is an open task unless this page lists it.
 
-**Last updated:** 2026-10-23 (America/Los_Angeles) by Claude Code: step A (lighter questions) built as a draft PR on top of `integrate/one-laylaw`.
+**Last updated:** 2026-10-25 (America/Los_Angeles) by Claude (chat): Michael's go-ahead for A2 P1 and the recap wording, with the brief linked in §4. Earlier the same day, Claude Code recorded Soul's review of PR #16 and pushed the offered-skip logging fix.
 
 ## Ground rules (unchanged)
 
@@ -82,8 +82,35 @@ Soul reviews each before the next starts. Ready-to-run Claude Code briefs are in
 [`docs/briefs/`](docs/briefs/): open a Claude Code session on this repo and say *"Read
 `docs/briefs/A-lighter-questions.md` and do it."*
 
-- **A. Lighter, smoother questions** (engine). **Built; draft PR awaiting Soul's review** (branch
+- **A. Lighter, smoother questions** (engine). **Built; draft PR #15 awaiting Soul's review** (branch
   `ccr-346c90bc-1umwms`, base `integrate/one-laylaw`). Tests: `tests/test_lighter_questions.py`.
+- **A2. Follow-up v2** (engine; brief in Drive → AI Agent Notes, "Laylaw Brief A2"). **P0 built; draft PR
+  stacked on #15** (branch `ccr-346c90bc-1umwms-a2`). Tests: `tests/test_followup_v2.py`.
+  - Built: one "How do you know about these?" per multi-event answer, a scope check in the person's own
+    words, and no silent inheritance (0.1). "I don't know", "Skip", "I don't understand" (rephrase once,
+    then offer to skip) (0.2). A per-session register so nothing is asked twice (0.3). A recap body made
+    only of the person's words, plus a lint test (0.4).
+  - Skipped (existing tests pin the wording): the new recap/record/closing question wording, and asking
+    the record question after the recap. Listed in the PR for Soul.
+  - **Soul, 2026-10-25 (product review on #16, not a full sign-off):** P0 direction conditionally
+    accepted. One targeted fix: an offered skip was logged as "answered". **Fixed** (the answer is now
+    settled before it's logged; covered by a save/resume test).
+    1. Keep the conservative scope rule. In P1, ask "Which of those events does that explanation apply
+       to?" when the scope is unclear, and add partial-scope and ambiguous-wording cases.
+    2. "I don't know" is an explicit unknown answer and closes the question. It stays visible on the fact
+       record and in outputs. "Skip" stays an open item.
+    3. Free-recall opener: Claude may change only the tests needed to assert the new behavior, keeping
+       equivalent protection for provenance, certainty, one question at a time, neutral wording,
+       corrections and safety. No deleting tests to get green.
+    4. Limits (3 per fact, 2 deferred at recap) are provisional. Assess them on synthetic transcripts
+       before tuning. Never drop a source or certainty check without marking the gap.
+    5. 0.4 wording: a separate draft may make the recap, record and closing questions more natural. Keep
+       the "more certain than intended" check, record-to-fact traceability and corrections. If the record
+       question moves after the recap, prove it's asked once and can't strand new additions.
+    6. "Huh?" at an opening prompt, recap or final check is a P1 priority. Never store it as a fact or a
+       correction.
+  - **Next (Michael's go-ahead, 2026-10-25):** P1 as a new draft PR stacked on #16, then the 0.4 wording change as
+    its own draft stacked on that. Brief: [`docs/briefs/A2-P1-and-recap-wording.md`](docs/briefs/A2-P1-and-recap-wording.md).
 - **B. Case-level document memory** (engine + web). Attach uploads and interviews to one case record.
   Start each interview from a short "what's on file" brief the client confirms or corrects, keeping
   where each fact came from (document or client) separate. Voice-kit checkpoints load into the same case.

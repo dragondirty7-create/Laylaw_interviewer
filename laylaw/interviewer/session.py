@@ -52,6 +52,30 @@ SAFETY_QUESTION = (
     "we can come back to this later."
 )
 CERTAINTY_QUESTION = "Which part are you certain about, and which part are you unsure about?"
+GROUP_SOURCE_QUESTION = "How do you know about these?"
+SCOPE_NOT_SURE = "It's fine to say you're not sure."
+# Asked once when the interviewee says they don't understand; the opening words say why it is asked again.
+REPHRASE_PREFIX = "I may have put that badly. "
+REPHRASED = {
+    "date": "Roughly when did this happen? A month, a season, or what else was going on then is fine.",
+    "people_present": "Who, if anyone, was with you or nearby when this happened?",
+    "location": "What was the place where this happened?",
+    "source": "How did you find out about this?",
+    "source_group": "How did you find out about these things?",
+    "source_scope": ("Did you find out about each of them the same way, or was one of them different? "
+                     + SCOPE_NOT_SURE),
+    "certainty": "Which parts do you remember clearly, and which parts less clearly?",
+    "next": "After that, what happened?",
+    "discrepancy": "I may have mixed up my notes. Tell me more about that part, in your own words.",
+}
+REPHRASED_ROUTINE_NEXT = "Is there one time that stands out as different?"
+# What a follow-up was about, for an Open Questions entry when it was skipped after rephrasing.
+INTENT_TOPIC = {"date": "when it happened", "people_present": "who was there", "location": "where it happened",
+                "source": "how they know", "source_group": "how they know", "source_scope": "how they know",
+                "certainty": "how sure they are", "next": "what happened next",
+                "discrepancy": "which recollection is closer"}
+OFFER_SKIP_TEXT = ("That one may not fit, and that's fine. We can skip it for now, or you can answer "
+                   "in your own words.")
 SAVED_FOR_LATER = "Saved. When you come back, we'll pick up at the same question."
 
 
@@ -86,6 +110,7 @@ class PendingQuestion:
     fact_id: Optional[str] = None
     field: Optional[str] = None
     ref: Optional[str] = None   # exact item this question is about (e.g. a discrepancy id); saved with it
+    why: Optional[str] = None   # the stated reason when the same thing is asked again (e.g. rephrased)
 
 
 @dataclass
@@ -121,6 +146,9 @@ class InterviewSession:
     intake: list[IntakeItem] = field(default_factory=list)
     sequence_links: list[dict] = field(default_factory=list)
     open_questions: list[str] = field(default_factory=list)
+    # Every follow-up intent asked about each item: {"fact", "intent", "turn", "outcome", "why"}.
+    # A question already in here is never asked again unless it carries a reason.
+    asked: list[dict] = field(default_factory=list)
     safety_notes: list[str] = field(default_factory=list)
     oriented: bool = False
     final_check_started: bool = False
@@ -216,6 +244,7 @@ class InterviewSession:
             open_questions=d["open_questions"], safety_notes=d["safety_notes"], oriented=d["oriented"],
             final_check_started=d["final_check_started"],
             workspace_confirmed=d.get("workspace_confirmed"),
+            asked=d.get("asked", []),
         )
 
     # ----------------------------------------------------------- interrupt/resume
@@ -330,8 +359,11 @@ class InterviewSession:
         return self._emit(text)
 
     def _advance(self) -> Optional[PendingQuestion]:
-        if self.queue:
-            return self.queue.pop(0)
+        while self.queue:
+            q = self.queue.pop(0)
+            if q.kind == "clarify" and not q.why and self._already_asked(q):
+                continue   # answered, skipped or "don't know" before: never asked again
+            return q
         if self.current_section and self.current_section in self.sections \
                 and self.current_section not in self.completed_sections:
             self.completed_sections.append(self.current_section)
@@ -375,6 +407,8 @@ class InterviewSession:
         control = tags.pop("control", None) or classify.detect_control(text)
         if control == "save_later":
             return self.save_and_finish_later()
+        if control == "dont_understand" and not (q and q.kind == "clarify"):
+            control = None   # only follow-ups are rephrased; anything else is read as before
 
         turn = Turn(len(self.turns), self.current_section or "", q.text if q else None, text, control=control)
         self.turns.append(turn)
@@ -404,7 +438,15 @@ class InterviewSession:
             return None
 
         kind = q.kind if q else "free_account"
-        if control in ("skip", "not_sure"):
+        if kind == "clarify" and (q.why or "").startswith("offer_skip") and (
+                control == "dont_understand" or (control is None and _is_no(text))):
+            control = "skip"   # "no" (or still not understood) to "skip it, or answer in your own words?"
+        if kind == "clarify":   # logged after the answer's meaning is settled, so the outcome is the real one
+            self._log_asked(q, turn.index, {"skip": "skipped", "not_sure": "dont_know",
+                                            "dont_understand": "not_understood"}.get(control, "answered"))
+        if control == "dont_understand":
+            self._rephrase(q)
+        elif control in ("skip", "not_sure"):
             self._apply_control(control, q, turn.index)
         elif kind == "safety":
             if tags.get("keep_paused") or _not_safe(text):
@@ -462,13 +504,29 @@ class InterviewSession:
             return
         if q.kind == "clarify" and q.fact_id:
             fact = self.get_fact(q.fact_id)
+            ids = self._group_ids(q)
             if q.field == "date" and control == "not_sure":
                 fact.date = DateValue("not sure", DatePrecision.UNKNOWN)  # unknown, stated as such
             if q.field == "discrepancy":
                 d = self._discrepancy_for(q)
                 if d:
                     d.resolution_note = f"Interviewee: {'skipped' if control == 'skip' else 'not sure'}"
-            fact.open_questions.append(f"{label}: {q.text}")
+            if q.field in ("source", "source_group", "source_scope"):
+                for fid in ids:
+                    f = self.get_fact(fid)
+                    if control == "not_sure":   # "don't know" is an answer: the basis stays unknown, closed
+                        f.source_turn, f.source_scope = turn_index, "answered"
+                        f.open_questions.append(f"Basis of knowledge: interviewee doesn't know ({q.text})")
+                    else:
+                        self._source_unspecified(f, f"skipped: {q.text}")
+                return
+            if control == "skip":
+                fact.open_questions.append(f"{label}: {q.text}")
+                asked = (f"{INTENT_TOPIC.get(q.field, q.field)} (not understood, then skipped)" if q.why else q.text)
+                if q.field != "discrepancy":     # unresolved discrepancies are listed already
+                    self.open_questions.append(f"{fact.id}: skipped: {asked}")
+            else:
+                fact.open_questions.append(f"Answered: interviewee doesn't know ({q.text})")
             return
         if q.kind == "correction_target":
             self.open_questions.append(f"Correction {q.field} not yet matched to an item ({label.lower()})")
@@ -630,6 +688,16 @@ class InterviewSession:
     def _queue_answer(self, facts: list[Fact]) -> None:
         for i, f in enumerate(facts):
             self._queue_clarifications(f, first=i == 0, last=i == len(facts) - 1)
+        # Several items from one answer that all need a basis: ask once for the group,
+        # then confirm which items the answer covers. Nothing is inherited silently.
+        ids = {f.id for f in facts}
+        src = [q for q in self.queue if q.kind == "clarify" and q.field == "source" and q.fact_id in ids]
+        if len(src) > 1:
+            at = self.queue.index(src[0])
+            self.queue = [q for q in self.queue if q not in src]
+            group = [q.fact_id for q in src]
+            self.queue.insert(at, PendingQuestion("clarify", GROUP_SOURCE_QUESTION, group[0], "source_group",
+                                                  ref=",".join(group)))
 
     def _queue_clarifications(self, fact: Fact, *, first: bool = True, last: bool = True) -> None:
         """One question at a time, open-ended, never suggesting an answer.
@@ -671,7 +739,7 @@ class InterviewSession:
         keep = sorted(qs, key=lambda q: priority.index(q.field))[:max(spec_for(fact.topic).max_followups,
                                                                        sum(q.field in ("source", "certainty")
                                                                            for q in qs))]
-        asked = [q for q in qs if q in keep]
+        asked = [q for q in qs if q in keep and not self._already_asked(q)]
         for q in qs:
             if q not in keep and q.field != "people_present":   # "who was present" is listed for every fact
                 self.open_questions.append(f"{fact.id}: not asked, to keep the interview short: {q.text}")
@@ -706,7 +774,16 @@ class InterviewSession:
                 self.set_fact_location(fact.id, text, turn_index=turn_index)
         elif q.field == "source":
             src = tags.get("source") or classify.classify_source(text)
-            self._set_source(fact, SourceOfKnowledge(src), basis_text=text)
+            self._set_source(fact, SourceOfKnowledge(src), basis_text=text, turn=turn_index, scope="answered")
+        elif q.field == "source_group":
+            ids = self._group_ids(q)
+            if _covers_all(text):
+                self._apply_group_source(ids, turn_index, None, "confirmed_all", **tags)
+            else:
+                self.queue.insert(0, PendingQuestion("clarify", self._scope_question(ids), ids[0],
+                                                     "source_scope", ref=f"{turn_index}|{','.join(ids)}"))
+        elif q.field == "source_scope":
+            self._apply_scope(q, text, turn_index, **tags)
         elif q.field == "certainty":
             fact.open_questions.append(f"Certainty clarification (interviewee's words): {text}")
         elif q.field == "discrepancy":
@@ -765,6 +842,118 @@ class InterviewSession:
                 return same[0], same
         return None, ids
 
+    # ----------------------------------------------------------- asked-once register
+    def _root(self, fact_id: str) -> str:
+        """A corrected item is the same item: questions about it are not asked again."""
+        f = self.get_fact(fact_id)
+        while f.correction_of:
+            f = self.get_fact(f.correction_of)
+        return f.id
+
+    @staticmethod
+    def _intent(q: PendingQuestion) -> str:
+        if q.field == "discrepancy":
+            return f"discrepancy:{q.ref}"
+        return "source" if q.field == "source_group" else q.field
+
+    def _group_ids(self, q: PendingQuestion) -> list[str]:
+        if q.field == "source_group" and q.ref:
+            return q.ref.split(",")
+        if q.field == "source_scope" and q.ref:
+            return q.ref.split("|", 1)[1].split(",")
+        return [q.fact_id] if q.fact_id else []
+
+    def _already_asked(self, q: PendingQuestion) -> bool:
+        intent = self._intent(q)
+        roots = {self._root(fid) for fid in self._group_ids(q)}
+        return any(a["fact"] in roots and a["intent"] == intent for a in self.asked)
+
+    def _log_asked(self, q: PendingQuestion, turn_index: int, outcome: str) -> None:
+        for fid in self._group_ids(q):
+            self.asked.append({"fact": self._root(fid), "intent": self._intent(q), "turn": turn_index,
+                               "outcome": outcome, "why": q.why})
+
+    def _rephrase(self, q: PendingQuestion) -> None:
+        """"I don't understand": say it another way once, then offer to skip."""
+        why = q.why or ""
+        if why.startswith("rephrased"):
+            self.queue.insert(0, PendingQuestion(q.kind, OFFER_SKIP_TEXT, q.fact_id, q.field, ref=q.ref,
+                                                 why="offer_skip: not understood after rephrasing"))
+            return
+        fact = self.get_fact(q.fact_id) if q.fact_id else None
+        text = (REPHRASED_ROUTINE_NEXT if q.field == "next" and fact and fact.kind == EventKind.ROUTINE
+                else REPHRASED.get(q.field, "Could you tell me about that in your own words?"))
+        self.queue.insert(0, PendingQuestion(q.kind, REPHRASE_PREFIX + text, q.fact_id, q.field, ref=q.ref,
+                                             why="rephrased: interviewee did not understand"))
+
+    # ----------------------------------------------------------- basis of knowledge for several items
+    @staticmethod
+    def _label(f: Fact) -> str:
+        """The interviewee's own words for an item: its first few words, quoted."""
+        words = f.statement.rstrip(" .!?").split()
+        return '"' + " ".join(words[:6]) + ("..." if len(words) > 6 else "") + '"'
+
+    def _scope_question(self, ids: list[str]) -> str:
+        labels = [self._label(self.get_fact(i)) for i in ids]
+        listed = ", ".join(labels[:-1]) + (", and " if len(labels) > 2 else " and ") + labels[-1]
+        return f"Does that go for all of them ({listed}), or is any of them different? {SCOPE_NOT_SURE}"
+
+    def _apply_group_source(self, ids: list[str], basis_turn: int, confirm_turn: Optional[int], scope: str,
+                            **tags) -> None:
+        basis = self.turns[basis_turn].answer
+        src = SourceOfKnowledge(tags.get("source") or classify.classify_source(basis))
+        for fid in ids:
+            f = self.get_fact(fid)
+            self._set_source(f, src, basis_text=basis, turn=basis_turn, scope=scope)
+            if confirm_turn is not None:
+                f.open_questions.append(f"Basis applies to this item: confirmed by the interviewee "
+                                        f"(\"{self.turns[confirm_turn].answer}\")")
+
+    def _source_unspecified(self, f: Fact, why: str) -> None:
+        f.source_scope = "unspecified"
+        self.open_questions.append(f"{f.id}: how the interviewee knows this is unspecified ({why})")
+
+    def _apply_scope(self, q: PendingQuestion, text: str, turn_index: int, **tags) -> None:
+        basis_turn, ids = int(q.ref.split("|", 1)[0]), self._group_ids(q)
+        named = self._named_items(text, ids)
+        differs = bool(_DIFFERENT.search(text))
+        if _all_different(text):
+            different, same = ids, []
+        elif named and differs:
+            different, same = named, [i for i in ids if i not in named]
+        elif _covers_all(text) and not differs:
+            different, same = [], ids
+        else:   # unclear, a bare yes/no, or not sure: nothing is applied
+            for fid in ids:
+                self._source_unspecified(self.get_fact(fid), f'scope not confirmed: "{text}"')
+            return
+        if same:
+            self._apply_group_source(same, basis_turn, turn_index,
+                                     "confirmed_all" if not different else "confirmed_except", **tags)
+        for fid in reversed(different):
+            self.queue.insert(0, PendingQuestion("clarify", f"How do you know about {self._label(self.get_fact(fid))}?",
+                                                 fid, "source", why="interviewee said this one was different"))
+
+    def _named_items(self, text: str, ids: list[str]) -> list[str]:
+        """Items the answer points to: "item 2", "the first/last one", or words only that item used."""
+        out = []
+        t = text.lower()
+        for n, word in enumerate(("first", "second", "third", "fourth", "fifth")):
+            if re.search(rf"\b{word}\b", t) and n < len(ids):
+                out.append(ids[n])
+        if re.search(r"\blast\b", t):
+            out.append(ids[-1])
+        m = _explicit_target(text, ids)
+        if m:
+            out.append(m)
+        words = {i: set(re.findall(r"[a-z']{4,}", self.get_fact(i).statement.lower())) - _COMMON for i in ids}
+        said = set(re.findall(r"[a-z']{4,}", t))
+        for i in ids:
+            others = set().union(*(w for j, w in words.items() if j != i))
+            if (words[i] - others) & said:
+                out.append(i)
+        return list(dict.fromkeys(out))
+
     # ----------------------------------------------------------- direct recording API
     def record_fact(self, statement: str, *, topic: str, turn_index: Optional[int] = None,
                     date_text: Optional[str] = None, source: Optional[SourceOfKnowledge | str] = None,
@@ -812,6 +1001,8 @@ class InterviewSession:
         if detected == SourceOfKnowledge.SECONDHAND:
             chosen = SourceOfKnowledge.SECONDHAND
         self._set_source(fact, chosen)
+        if fact.source != SourceOfKnowledge.UNKNOWN:
+            fact.source_turn, fact.source_scope = fact.provenance.turn_index, "own_words"
         self.facts.append(fact)
         if date_text is not None:
             self.set_fact_date(fact.id, date_text)
@@ -822,8 +1013,11 @@ class InterviewSession:
         self.save()
         return fact
 
-    def _set_source(self, fact: Fact, src: SourceOfKnowledge, basis_text: str = "") -> None:
+    def _set_source(self, fact: Fact, src: SourceOfKnowledge, basis_text: str = "", *,
+                    turn: Optional[int] = None, scope: Optional[str] = None) -> None:
         """Assign source of knowledge, refusing to upgrade secondhand reports."""
+        if turn is not None:
+            fact.source_turn, fact.source_scope = turn, scope
         if src == SourceOfKnowledge.REQUEST:
             raise ValueError("a requested outcome can never be a historical fact")
         heard_it = fact.told_by is not None or fact.source == SourceOfKnowledge.SECONDHAND
@@ -1262,11 +1456,11 @@ class InterviewSession:
 
     # ----------------------------------------------------------- recaps
     def section_recap(self, section: Optional[str] = None, with_questions: bool = True) -> str:
-        from .outputs import neutral_fact_line
+        from .outputs import recap_line
         section = section or self.current_section
-        lines = [neutral_fact_line(f, self) for f in self._current_facts(section)]
+        lines = [recap_line(f, self) for f in self._current_facts(section)]
         body = "\n".join(f"- {ln}" for ln in lines) or "- (nothing recorded yet)"
-        text = f"Here's what I have for {section.lower()}:\n{body}"
+        text = f"Here's what I have for {section.lower()}, in your words:\n{body}"
         if with_questions:
             text += "\n\n" + "\n".join(END_OF_SECTION_QUESTIONS)
         return self._emit(text)
@@ -1317,6 +1511,24 @@ _NO_WORD = (r"(?:no|nope|nah|none|nothing|looks (?:right|good|fine)|that'?s (?:r
             r"that is (?:right|correct|it|all|everything)|correct|all good|nothing (?:else|more)|"
             r"i think (?:that'?s|it'?s) (?:it|all|right|everything))")
 _NO = re.compile(rf"(?i)\s*{_NO_WORD}(?:[\s,.!;:-]+{_NO_WORD})*[.!]?\s*")
+
+
+_ALL = re.compile(r"(?i)\b(?:all(?: of (?:them|those|these|it))?|all (?:two|three|four|five)|every(?:thing| one|one)"
+                  r"|each (?:of them|one)|both|the same (?:for|way for) (?:all|each|every)|same for all)\b")
+_DIFFERENT = re.compile(r"(?i)\b(?:except|apart from|other than|different|differently|not (?:the|for|that)"
+                        r"|but (?:the|not)|only)\b")
+_ALL_DIFFERENT = re.compile(r"(?i)\b(?:none of them|(?:they'?re|they are|it'?s|each (?:one )?is|all) (?:all )?different"
+                            r"|each (?:one )?(?:was|is) different|different (?:for|with) each)\b")
+_COMMON = {"that", "this", "with", "then", "they", "them", "there", "were", "what", "when", "about", "from",
+           "have", "said", "just", "after", "before", "later", "night", "time"}
+
+
+def _covers_all(text: str) -> bool:
+    return bool(_ALL.search(text)) and not _DIFFERENT.search(text)
+
+
+def _all_different(text: str) -> bool:
+    return bool(_ALL_DIFFERENT.search(text))
 
 
 def _is_nothing_more(text: str) -> bool:
