@@ -315,6 +315,10 @@ class InterviewSession:
         self.is_continuation = True
         if self.status == SessionStatus.PAUSED:
             self.status = SessionStatus.ACTIVE
+        if self.turns and self.turns[-1].control == "save_later":
+            # Coming back after "save and finish later" is a fresh start for tiredness. A technical
+            # interruption (no such turn) keeps the counts. Held questions and the record are kept either way.
+            self.skip_streak = self.minimal_streak = 0
         self.save()
         return self.resume_prompt()
 

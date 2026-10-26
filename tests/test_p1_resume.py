@@ -209,44 +209,89 @@ def test_a_new_section_after_resume_can_still_offer_its_own_break(ws):
 
 
 # ============================================================ 3. tiredness counters
-@pytest.mark.parametrize("via", VIA)
-def test_skip_streak_survives_resume(session, via):
+# Soul's decision: a deliberate "save and finish later" resets the skip and minimal-answer streaks on
+# resume; a technical interruption keeps them. Everything else survives both.
+def _one_skip(session):
     session.next_question()
     session.answer("Sam Rowe arrived late.")
     session.next_question()
     session.answer("skip")
     assert session.skip_streak == 1
     session.next_question()
-    s = _reload(session, via)
-    assert s.skip_streak == 1                                   # saving and resuming is not an answer
-    s.next_question()
-    s.answer("skip")
-    assert s.next_question() == BREAK_OFFER
 
 
-@pytest.mark.parametrize("via", VIA)
-def test_minimal_answer_streak_survives_resume(ws, via):
-    s = new_session(ws, sections=["Specific incidents", "Housing", "Current household"])
+def _two_minimal(ws):
+    s = new_session(ws, sections=["Specific incidents", "Housing", "Current household", "Procedural history",
+                                  "Current parenting routine"])
     for _ in range(2):
         s.next_question()
         assert s.pending.kind == "free_account"
         s.answer("No.")
     assert s.minimal_streak == 2
     s.next_question()
-    s = _reload(s, via)
+    return s
+
+
+def test_skip_streak_resets_after_save_and_finish_later(session):
+    _one_skip(session)
+    s = _reload(session, "save_later")
+    assert s.skip_streak == 0                                   # a deliberate break: counted afresh
+    s.next_question()
+    s.answer("skip")
+    assert s.next_question() != BREAK_OFFER                     # one skip after coming back is not tiredness
+    s.answer("skip")
+    assert s.next_question() == BREAK_OFFER                     # two in a row still are
+
+
+def test_minimal_answer_streak_resets_after_save_and_finish_later(ws):
+    s = _reload(_two_minimal(ws), "save_later")
+    assert s.minimal_streak == 0
+    for _ in range(2):
+        assert s.next_question() != BREAK_OFFER and s.pending.kind == "free_account"
+        s.answer("No.")
+    assert s.next_question() != BREAK_OFFER
+    s.answer("No.")
+    assert s.next_question() == BREAK_OFFER                     # three new minimal answers still are
+
+
+def test_skip_streak_survives_a_technical_interruption(session):
+    _one_skip(session)
+    s = _reload(session, "interrupt")
+    assert s.skip_streak == 1                                   # nobody chose to stop: the count stands
+    s.next_question()
+    s.answer("skip")
+    assert s.next_question() == BREAK_OFFER
+
+
+def test_minimal_answer_streak_survives_a_technical_interruption(ws):
+    s = _reload(_two_minimal(ws), "interrupt")
     assert s.minimal_streak == 2
     assert s.next_question() and s.pending.kind == "free_account"
     s.answer("No.")
     assert s.next_question() == BREAK_OFFER
 
 
-def test_a_real_answer_after_resume_still_resets_the_streaks(session):
+def test_saved_resume_resets_only_the_streaks(session):
+    """Held questions, the break already offered, and the record all survive a deliberate save."""
     session.next_question()
-    session.answer("Sam Rowe arrived late.")
+    session.answer("They were probably arguing in the kitchen. This is hard.")
+    assert session.next_question() == BREAK_OFFER
+    session.answer("Keep going")
     session.next_question()
     session.answer("skip")
     session.next_question()
+    kept = ([(d.fact_id, d.field) for d in session.deferred], list(session.fatigue_sections),
+            [f.statement for f in session.facts], list(session.open_questions), len(session.asked))
+    assert session.skip_streak == 1 and kept[0]
     s = _reload(session, "save_later")
+    assert (s.skip_streak, s.minimal_streak) == (0, 0)
+    assert ([(d.fact_id, d.field) for d in s.deferred], list(s.fatigue_sections),
+            [f.statement for f in s.facts], list(s.open_questions), len(s.asked)) == kept
+
+
+def test_a_real_answer_after_resume_still_resets_the_streaks(session):
+    _one_skip(session)
+    s = _reload(session, "interrupt")
     s.next_question()
     s.answer("At the library on Main Street.")
     assert s.skip_streak == 0
