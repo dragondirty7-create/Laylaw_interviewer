@@ -21,6 +21,9 @@ class SectionSpec:
     followups: tuple = ()              # (field, question) pairs for procedural sections
     default_source: Optional[SourceOfKnowledge] = None
     optional_note: Optional[str] = None
+    # Most follow-ups asked after one fact. Source and certainty checks are asked
+    # even past the cap; anything else left over goes to Open Questions.
+    max_followups: int = 3
 
 
 # ---------------------------------------------------------------- family law

@@ -112,6 +112,22 @@ def classify_source(text: str) -> SourceOfKnowledge:
     return SourceOfKnowledge.UNKNOWN
 
 
+# A present-tense description of how things are ("Pip lives with me"), not
+# something that happened. Used only to skip follow-ups that don't fit a state
+# (who else was there, where, what happened next); any past-tense or one-time
+# cue keeps the sentence an event, so a doubtful case is still asked about.
+_STATE_VERB = re.compile(r"(?i)\b(?:lives?|stays?|is|are|has|have|works?|attends?|goes to|go to|owns?|"
+                         r"rents?|takes? care of|looks? after)\b")
+_EVENT_CUE = re.compile(
+    r"(?i)\b(?:was|were|did|had|went|came|said|told|left|took|got|ran|saw|threw|broke|sent|drove|hit|"
+    r"made|gave|brought|caught|kept|put|yesterday|tonight|today|ago|last|once|then|when|after|before|"
+    r"suddenly|started|stopped|\w+ed)\b")
+
+
+def describes_state(text: str) -> bool:
+    return bool(_STATE_VERB.search(text)) and not _EVENT_CUE.search(text)
+
+
 def is_request(text: str) -> bool:
     return bool(_find(REQUEST_PATTERNS, text))
 

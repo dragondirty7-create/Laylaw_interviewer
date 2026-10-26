@@ -5,7 +5,7 @@ reads it before starting and updates it when they finish. The Drive *PROJECT IND
 here instead of keeping its own copy. Older handoff notes are in [`docs/handoffs/`](docs/handoffs/)
 and are history: nothing in them is an open task unless this page lists it.
 
-**Last updated:** 2026-10-23 (America/Los_Angeles) by Claude, while bringing every open branch into one.
+**Last updated:** 2026-10-23 (America/Los_Angeles) by Claude Code: step A (lighter questions) built as a draft PR on top of `integrate/one-laylaw`.
 
 ## Ground rules (unchanged)
 
@@ -62,12 +62,16 @@ be reverted on the integration branch before it merges.
    - Nothing reads what a document says. Uploads are kept and fingerprinted, but no dates, orders or
      filings are pulled out to shape the questions.
    - A voice-kit session starts from a blank chat, and the kit gives it no summary of what is on file.
-2. **The flow felt choppy.**
-   - After every fact, `_queue_clarifications` (`laylaw/interviewer/session.py`) queues up to seven
-     follow-ups: when, who else, where, how do you know, how sure, what next, and anything to document it.
-   - **Confirmed bug:** natural "I'm done" answers such as *"No, that's all."* or *"Nope, nothing else."*
-     don't match `_NOTHING_MORE`, so they're recorded as a new fact and trigger the whole set again. Only
-     the bare forms (*"No."*, *"Nothing else."*) end it. First reported 2026-09-29; still open.
+2. **The flow felt choppy.** *Fixed in step A (draft PR, branch `ccr-346c90bc-1umwms`), pending Soul's review.*
+   - ~~After every fact, `_queue_clarifications` queues up to seven follow-ups.~~ Now at most three per
+     fact by default (`SectionSpec.max_followups` in `paths.py`); source and certainty checks are always
+     asked; the rest go to Open Questions. Routine facts and states skip "who else / where / what next";
+     one answer split into several items is treated as one account; "anything to document this?" is asked
+     once per section, before the recap.
+   - ~~**Confirmed bug:** *"No, that's all."* / *"Nope, nothing else."* recorded as facts and restarted the
+     follow-ups.~~ Fixed: 21 "that's all" forms end the follow-ups; 15 content forms (*"No, then he left."*)
+     are still recorded. On the synthetic five-fact transcript: before, the loop never ended (294
+     follow-ups in 300 turns); after, 14 follow-ups.
    - The voice kit adds a spoken recap, a "Is anything wrong or missing?" check and a full text
      checkpoint at the end of every section.
 
@@ -78,9 +82,8 @@ Soul reviews each before the next starts. Ready-to-run Claude Code briefs are in
 [`docs/briefs/`](docs/briefs/): open a Claude Code session on this repo and say *"Read
 `docs/briefs/A-lighter-questions.md` and do it."*
 
-- **A. Lighter, smoother questions** (engine). Fix the "No, that's all." loop. Ask only the follow-ups
-  that matter for that kind of fact and are still missing. Move the "anything to document this?"
-  question to the end of a section. Smaller, but it changes how every interview feels.
+- **A. Lighter, smoother questions** (engine). **Built; draft PR awaiting Soul's review** (branch
+  `ccr-346c90bc-1umwms`, base `integrate/one-laylaw`). Tests: `tests/test_lighter_questions.py`.
 - **B. Case-level document memory** (engine + web). Attach uploads and interviews to one case record.
   Start each interview from a short "what's on file" brief the client confirms or corrects, keeping
   where each fact came from (document or client) separate. Voice-kit checkpoints load into the same case.
