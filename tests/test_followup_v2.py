@@ -358,3 +358,23 @@ def test_lint_no_bare_confirmations_or_anything_else_in_recap_and_closing(sessio
     for text in _templates(session):
         for pat in BANNED:
             assert not re.search(pat, text, flags=re.I), (pat, text)
+
+
+@pytest.mark.parametrize("reply", ["No.", "Huh?", "skip"])
+def test_offered_skip_is_logged_as_skipped_and_survives_resume(ws, store, reply):
+    """Soul, 2026-10-25: normalise the answer to the offer first, then log the real outcome."""
+    s = new_session(ws)
+    _first_date_q(s)
+    s.answer("Huh?")
+    s.next_question()
+    s.answer("I don't understand")
+    assert s.next_question() == OFFER_SKIP_TEXT
+    s.answer(reply)
+    last = s.asked[-1]
+    assert (last["intent"], last["outcome"]) == ("date", "skipped") and last["why"].startswith("offer_skip")
+    s.save_and_finish_later()
+    again = store.workspace(ws.client_id).load_session(s.interview_id)
+    assert again.asked[-1]["outcome"] == "skipped"
+    assert not any(a["outcome"] == "answered" for a in again.asked if a["intent"] == "date")
+    again.resume()
+    assert not [a for a in _rest_of_interview(again) if a[0] == again.facts[0].id and a[1] == "date"]

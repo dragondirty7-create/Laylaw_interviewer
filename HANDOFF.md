@@ -5,7 +5,7 @@ reads it before starting and updates it when they finish. The Drive *PROJECT IND
 here instead of keeping its own copy. Older handoff notes are in [`docs/handoffs/`](docs/handoffs/)
 and are history: nothing in them is an open task unless this page lists it.
 
-**Last updated:** 2026-10-23 (America/Los_Angeles) by Claude Code: step A2 P0 (follow-up v2) built as a draft PR stacked on step A's PR #15.
+**Last updated:** 2026-10-25 (America/Los_Angeles) by Claude Code: Soul's 2026-10-25 review of PR #16 recorded; the offered-skip logging fix is pushed.
 
 ## Ground rules (unchanged)
 
@@ -92,8 +92,24 @@ Soul reviews each before the next starts. Ready-to-run Claude Code briefs are in
     only of the person's words, plus a lint test (0.4).
   - Skipped (existing tests pin the wording): the new recap/record/closing question wording, and asking
     the record question after the recap. Listed in the PR for Soul.
-  - Next: P1 (free-recall opener, deferred questions at recap, fatigue, patterns, certainty once) as a
-    second draft PR after Soul's decisions.
+  - **Soul, 2026-10-25 (product review on #16, not a full sign-off):** P0 direction conditionally
+    accepted. One targeted fix: an offered skip was logged as "answered". **Fixed** (the answer is now
+    settled before it's logged; covered by a save/resume test).
+    1. Keep the conservative scope rule. In P1, ask "Which of those events does that explanation apply
+       to?" when the scope is unclear, and add partial-scope and ambiguous-wording cases.
+    2. "I don't know" is an explicit unknown answer and closes the question. It stays visible on the fact
+       record and in outputs. "Skip" stays an open item.
+    3. Free-recall opener: Claude may change only the tests needed to assert the new behavior, keeping
+       equivalent protection for provenance, certainty, one question at a time, neutral wording,
+       corrections and safety. No deleting tests to get green.
+    4. Limits (3 per fact, 2 deferred at recap) are provisional. Assess them on synthetic transcripts
+       before tuning. Never drop a source or certainty check without marking the gap.
+    5. 0.4 wording: a separate draft may make the recap, record and closing questions more natural. Keep
+       the "more certain than intended" check, record-to-fact traceability and corrections. If the record
+       question moves after the recap, prove it's asked once and can't strand new additions.
+    6. "Huh?" at an opening prompt, recap or final check is a P1 priority. Never store it as a fact or a
+       correction.
+  - Next: P1 as a new draft PR (and the 0.4 wording change as its own draft), when Michael gives the go-ahead.
 - **B. Case-level document memory** (engine + web). Attach uploads and interviews to one case record.
   Start each interview from a short "what's on file" brief the client confirms or corrects, keeping
   where each fact came from (document or client) separate. Voice-kit checkpoints load into the same case.

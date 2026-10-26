@@ -438,11 +438,12 @@ class InterviewSession:
             return None
 
         kind = q.kind if q else "free_account"
-        if kind == "clarify":
+        if kind == "clarify" and (q.why or "").startswith("offer_skip") and (
+                control == "dont_understand" or (control is None and _is_no(text))):
+            control = "skip"   # "no" (or still not understood) to "skip it, or answer in your own words?"
+        if kind == "clarify":   # logged after the answer's meaning is settled, so the outcome is the real one
             self._log_asked(q, turn.index, {"skip": "skipped", "not_sure": "dont_know",
                                             "dont_understand": "not_understood"}.get(control, "answered"))
-        if kind == "clarify" and (q.why or "").startswith("offer_skip") and control is None and _is_no(text):
-            control = "skip"   # "no" to "skip it, or answer in your own words?"
         if control == "dont_understand":
             self._rephrase(q)
         elif control in ("skip", "not_sure"):
@@ -875,9 +876,6 @@ class InterviewSession:
     def _rephrase(self, q: PendingQuestion) -> None:
         """"I don't understand": say it another way once, then offer to skip."""
         why = q.why or ""
-        if why.startswith("offer_skip"):
-            self._apply_control("skip", q, len(self.turns) - 1)
-            return
         if why.startswith("rephrased"):
             self.queue.insert(0, PendingQuestion(q.kind, OFFER_SKIP_TEXT, q.fact_id, q.field, ref=q.ref,
                                                  why="offer_skip: not understood after rephrasing"))
