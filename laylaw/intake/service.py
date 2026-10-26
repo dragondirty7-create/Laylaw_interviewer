@@ -87,4 +87,8 @@ def verify_evidence(ws: SecureWorkspace, intake: IncidentIntake) -> dict[str, bo
 def delete_matter(store: SecureStore, client_id: str) -> dict:
     if not client_id.startswith(MATTER_PREFIX):
         raise IntakeError("Only incident intake matters can be deleted here.")
+    if store.existing_workspace(client_id).list_sessions():
+        # Only possible in a vault from before labels were checked: never erase an interview with an intake.
+        raise IntakeError("This intake's workspace also holds an interview, so nothing was deleted. "
+                          "Ask your administrator to separate them first.")
     return store.delete_workspace(client_id)

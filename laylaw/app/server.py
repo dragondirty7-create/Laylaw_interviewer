@@ -458,10 +458,20 @@ class Handler(BaseHTTPRequestHandler):
             if not case_id or not interviewee:
                 app.flash.append(("err", "Enter a case reference and the interviewee's name."))
                 return self._redirect("/")
+            # One label, one client: a label is never reused or shared with an incident intake, so two
+            # people's interviews can't end up in one workspace (isolation review L3-L5).
+            if cid.lower().startswith(intake_service.MATTER_PREFIX):
+                app.flash.append(("err", f"Workspace labels can't start with \"{intake_service.MATTER_PREFIX}\"; "
+                                         "that name is kept for incident intakes. Nothing was started."))
+                return self._redirect("/")
+            if any(c.lower() == cid.lower() for c in app.store.list_clients()):
+                app.flash.append(("err", f"The workspace label \"{cid}\" is already in use, so nothing was "
+                                         "started. Choose a new label for this interview."))
+                return self._redirect("/")
             ws = app.store.workspace(cid)
             s, _notice = start_path(path_name, ws, case_id=case_id, interviewee=interviewee,
                                     interviewer="Laylaw Interviewer", purpose="Client intake interview",
-                                    interviewee_is_adult=True)
+                                    interviewee_is_adult=True, workspace_label=cid)
             app.sessions[(cid, s.interview_id)] = s
             return self._redirect(f"/i/{cid}/{s.interview_id}")
 
