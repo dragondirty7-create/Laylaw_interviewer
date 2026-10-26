@@ -19,11 +19,11 @@ from laylaw.interviewer.guard import assert_no_advocacy
 from laylaw.interviewer.models import FactStatus
 from laylaw.interviewer.session import ProvenanceError, SAFETY_QUESTION
 
-RECAP_WRONG = "Did I get anything wrong?"
+RECAP_WRONG = "What did I get wrong or leave out?"            # A2 wording: one open check
 RECAP_CERTAIN = "Did I make anything sound more certain than you intended?"
-RECAP_MISSED = "Is there anything important I missed?"
-FINAL_CORRECT = "Is there anything we discussed that you want to correct?"
-FINAL_DEFINITE = "Did I make anything sound more definite than you remember it?"
+RECAP_MISSED = RECAP_WRONG                                    # "missed" is part of the same check
+FINAL_CORRECT = "Is there something we discussed that you'd like to correct?"
+FINAL_DEFINITE = "Is there something I made sound more definite than you remember it?"
 DANGER_Q = "Is anyone in immediate danger right now?"
 
 
@@ -164,7 +164,7 @@ def test_3_bare_yes_at_recap_never_replaces_a_single_fact(session, ack):
     f = session.facts[0]
     assert len(session.facts) == 1 and f.status == FactStatus.CURRENT
     assert f.statement == "I saw a blue car." and session.corrections == []
-    assert session.next_question() == "What should I change?"
+    assert session.next_question() == "What should I change or add?"     # A2 wording: one open check
     session.answer("It was a green car.")
     assert session.facts[-1].statement == "It was a green car."
     assert session.facts[-1].correction_of == f.id and f.status == FactStatus.SUPERSEDED
@@ -175,8 +175,11 @@ def test_3_bare_yes_with_multiple_candidates_asks_for_content_before_the_item(se
     session.answer("I saw a blue car. Sam Rowe was driving it.")
     advance_to(session, ends(RECAP_WRONG))
     session.answer("Yes")
-    assert session.next_question() == "What should I change?"   # not the numbered list
+    assert session.next_question() == "What should I change or add?"   # not the numbered list
     session.answer("The car was green.")
+    assert session.next_question().startswith("Should I change something I already have")   # never guessed
+    assert session.corrections == [] and len(session.facts) == 2
+    session.answer("Change something you have.")
     q = session.next_question()
     assert q.endswith("Which numbered item does that change?")
     session.answer("1")
@@ -233,8 +236,11 @@ def test_3_bare_yes_to_missed_asks_what_was_missed_then_adds(session):
     advance_to(session, ends(RECAP_MISSED))
     session.answer("Yes")
     assert len(session.facts) == 1
-    assert session.next_question() == "What did I miss?"
+    assert session.next_question() == "What should I change or add?"     # A2 wording: one open check
     session.answer("Sam Rowe honked the horn.")
+    assert session.next_question().startswith("Should I change something I already have")   # never guessed
+    assert len(session.facts) == 1 and session.corrections == []
+    session.answer("Add it as something new.")
     assert [f.status for f in session.facts] == [FactStatus.CURRENT, FactStatus.CURRENT]
     assert session.corrections == []
 
@@ -283,6 +289,8 @@ def test_3_correction_saved_before_linking_is_traced_to_its_turn_on_resume(sessi
     session.answer("I saw a blue car. Sam Rowe was driving it.")
     advance_to(session, ends(RECAP_WRONG))
     session.answer("The car was green.")
+    assert session.next_question().startswith("Should I change something I already have")   # A2 wording
+    session.answer("Change it.")
     assert session.next_question().endswith("Which numbered item does that change?")
     d = session.to_dict()                                    # simulate a pre-repair save
     d["corrections"][0].update(raw_answer_id=None, span=None)

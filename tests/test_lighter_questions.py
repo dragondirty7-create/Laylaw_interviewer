@@ -272,11 +272,13 @@ def test_record_question_not_asked_again_after_an_addition(session):
     session.answer("No.")
     for _ in range(20):
         q = session.next_question()
-        if q == "Is there anything important I missed?":
+        if q.endswith("What did I get wrong or leave out?"):   # A2 wording: one open check
             break
         assert session.pending.kind != "record_hook"
         session.answer("No.")
     session.answer("Pip cried in the car.")
+    session.next_question()
+    session.answer("Something new.")                         # change or add? -> add
     assert len(session.facts) == 2
     assert not any(q.kind == "record_hook" for q in session.queue)
 

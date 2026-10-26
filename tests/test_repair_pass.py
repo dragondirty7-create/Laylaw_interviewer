@@ -28,7 +28,7 @@ def test_recap_correction_preserves_original_and_corrected_version(ws, store):
     s = new_session(ws)
     s.next_question()
     s.answer("Sam Rowe arrived at the library for the exchange.")
-    advance_to(s, lambda q: q.endswith("Did I get anything wrong?"))
+    advance_to(s, lambda q: q.endswith("What did I get wrong or leave out?"))
     s.answer("It was the community center, not the library.")
 
     orig, new = s.facts[0], s.facts[1]
@@ -59,7 +59,7 @@ def test_final_check_correction_asks_which_item_then_links_versions(ws):
     s.next_question()
     s.answer("Sam Rowe picked up the kids on a Monday. Casey Lin dropped off the backpacks.")
     assert len(s.facts) == 2
-    advance_to(s, lambda q: q == "Is there anything we discussed that you want to correct?", filler="No")
+    advance_to(s, lambda q: q == "Is there something we discussed that you'd like to correct?", filler="No")
     s.answer("It was a Tuesday, not a Monday.")                 # no explicit item -> ask which one
 
     q = s.next_question()
@@ -78,8 +78,8 @@ def test_correction_numbers_in_text_are_not_mistaken_for_item_numbers(ws):
     s = new_session(ws)
     s.next_question()
     s.answer("Two adults were at the park. Casey Lin was on the bench.")
-    advance_to(s, lambda q: q.endswith("Did I get anything wrong?"))
-    s.answer("2 kids were also there, I forgot.")
+    advance_to(s, lambda q: q.endswith("What did I get wrong or leave out?"))
+    s.answer("Actually 2 kids were there, not adults.")     # a correction (A2 wording routes "also" as an addition)
     assert s.corrections[0].status == "needs_target"            # "2" was NOT read as item 2
     assert all(f.status == FactStatus.CURRENT for f in s.facts[:2])
 
@@ -289,7 +289,7 @@ def test_non_date_discrepancies_preserve_both_recollections(session):
 def test_witness_record_hook_response_is_not_stored_as_a_document(session):
     session.next_question()
     session.answer("Casey Lin was late to the exchange.")
-    advance_to(session, lambda q: q == "Is there anything that might help document or date this?")
+    advance_to(session, lambda q: q == "Is there something else that might help document this?")
     session.answer("My neighbor saw it happen from her porch.")
     rec = session.records[-1]
     assert rec.source_type == SupportingSourceType.WITNESS
@@ -453,7 +453,7 @@ def test_summary_review_separates_reported_documents_and_unknown(session):
     session.mark_record_reviewed(rec.id)
     session.add_document_finding(f.id, rec.id, "Pickup logged at 5 pm.", date_text="June 12, 2024")
     session.propose_document_candidate(rec.id, "date", "June 12, 2024", fact_id=f.id)
-    q = advance_to(session, lambda x: x.endswith("Is there anything important that I didn't ask about?"),
+    q = advance_to(session, lambda x: x.endswith("Is there something important I didn't ask about?"),
                    filler="No")
     reported = q.split("WHAT YOU REPORTED")[1].split("WHAT DOCUMENTS SHOW")[0]
     docs = q.split("WHAT DOCUMENTS SHOW")[1].split("WHAT REMAINS UNKNOWN")[0]
