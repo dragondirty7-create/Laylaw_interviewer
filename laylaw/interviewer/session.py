@@ -129,7 +129,8 @@ class InterviewSession:
     def start(cls, workspace, *, case_id: str, interviewee: str, interviewer: str,
               purpose: str, sections: list[str], interviewee_is_adult: bool,
               transcript_status: TranscriptStatus = TranscriptStatus.STRUCTURED_NOTES,
-              path_name: str = "general", preflight: Optional[list[str]] = None) -> "InterviewSession":
+              path_name: str = "general", preflight: Optional[list[str]] = None,
+              workspace_label: Optional[str] = None) -> "InterviewSession":
         if not interviewee_is_adult:
             raise AdultInterviewOnly(
                 "Laylaw Interviewer interviews adults only and does not conduct forensic "
@@ -141,8 +142,9 @@ class InterviewSession:
         s.workspace = workspace
         if preflight:
             s.current_section = "Intake"
+            where = f', in the workspace "{workspace_label}"' if workspace_label else ""
             s.queue = [PendingQuestion("preflight", PREFLIGHT_QUESTIONS[k].format(
-                interviewee=interviewee, case_id=case_id), field=k) for k in preflight]
+                interviewee=interviewee, case_id=case_id, workspace=where), field=k) for k in preflight]
         s.save()
         return s
 

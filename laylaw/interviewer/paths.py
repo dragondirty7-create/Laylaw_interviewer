@@ -134,7 +134,9 @@ PATHS = {
 
 PREFLIGHT_QUESTIONS = {
     # Build Notes: "Choose the client and case type; confirm whose workspace is open."
-    "confirm_workspace": "Just to confirm before we begin: this interview is for {interviewee} (case {case_id}). "
+    # {workspace} is filled only where an operator chose the workspace label (the local app).
+    "confirm_workspace": "Just to confirm before we begin: this interview is for {interviewee} (case {case_id})"
+                         "{workspace}. "
                          "Is that right?",
     # Immediate danger is asked on its own, so a plain "yes" can only mean danger.
     "danger": "Is anyone in immediate danger right now?",
@@ -194,7 +196,8 @@ def suggest_sections(path_name: str, intake_text: str) -> list[str]:
 def start_path(path_name: str, workspace, *, case_id: str, interviewee: str, interviewer: str,
                purpose: str, interviewee_is_adult: bool, sections: list[str] | None = None,
                preflight: bool = True,
-               transcript_status: TranscriptStatus = TranscriptStatus.STRUCTURED_NOTES):
+               transcript_status: TranscriptStatus = TranscriptStatus.STRUCTURED_NOTES,
+               workspace_label: str | None = None):
     """Returns (session, notice_or_None). With no `sections`, the path's short
     default selection is used -- never the whole canonical list."""
     from .session import InterviewSession
@@ -205,5 +208,5 @@ def start_path(path_name: str, workspace, *, case_id: str, interviewee: str, int
         workspace, case_id=case_id, interviewee=interviewee, interviewer=interviewer, purpose=purpose,
         sections=chosen, interviewee_is_adult=interviewee_is_adult,
         transcript_status=transcript_status, path_name=path_name,
-        preflight=cfg["preflight"] if preflight else None)
+        preflight=cfg["preflight"] if preflight else None, workspace_label=workspace_label)
     return session, cfg["notice"]
