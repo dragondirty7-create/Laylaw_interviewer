@@ -13,7 +13,7 @@ from __future__ import annotations
 import datetime as _dt
 import re
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Optional
 
 from . import classify
@@ -68,7 +68,37 @@ REPHRASED = {
     "next": "After that, what happened?",
     "discrepancy": "I may have mixed up my notes. Tell me more about that part, in your own words.",
 }
-REPHRASED_ROUTINE_NEXT = "Is there one time that stands out as different?"
+# A pattern ("he always...") gets one invitation to a specific time, never a list of every time.
+PATTERN_INSTANCE_QUESTION = ("Is there one time that stands out — maybe the first, the most recent, or the "
+                             "one you remember best?")
+REPHRASED_ROUTINE_NEXT = "Can you think of one particular time it happened, like the first time or the most recent?"
+FREE_RECALL_TAIL = "In your own words, whatever comes to mind, in any order."
+# "I don't understand" outside a follow-up: said another way once, never stored as an answer.
+REPHRASED_BY_KIND = {
+    ("recap", "0"): "Which parts of what I read back, if any, don't match what you remember?",
+    ("recap", "1"): "Which parts, if any, did I make sound more sure than you are?",
+    ("recap", "2"): "What, if anything, did I leave out?",
+    ("final", "0"): "What, if anything, should I have asked you about?",
+    ("final", "1"): "Which parts, if any, would you like to change?",
+    ("final", "2"): "Which parts, if any, did I make sound more definite than you remember?",
+    ("final", "3"): "What would you like us to look at next time?",
+    ("record_hook", None): ("Is there something, like a message, a paper, a photo, or a person, that could help "
+                            "show when or how this happened?"),
+    ("check_followup", None): "Tell me in your own words what you'd like changed or added.",
+    ("correction_target", None): "Which item in the list does that change? You can say its number.",
+    ("procedural", None): "In your own words, what can you tell me about that? It's fine to say you don't know.",
+    ("deferred_permission", None): ("I have one or two short questions left for this part. Would you like to "
+                                    "answer them now, or save them for later?"),
+    ("break_offer", None): "Would you like to stop here and come back later, or keep going? Everything is saved.",
+}
+REPHRASABLE = {"clarify", "free_account", "recap", "final", "record_hook", "check_followup", "correction_target",
+               "procedural", "deferred_permission", "break_offer"}
+OPEN_PROMPTS = {("free_account", None), ("record_hook", None), ("recap", "2"), ("final", "0"),
+                ("clarify", "next"), ("clarify", "source"), ("clarify", "source_group"), ("clarify", "certainty")}
+BREAK_OFFER = "We can pause here and pick up later — everything's saved. Or keep going?"
+KEEP_SHORT_NOTICE = ("Okay, let's keep going. I'll keep the rest of this part short, and anything I leave out is "
+                     "noted so we can come back to it.")
+DISCRETIONARY = {"date", "people_present", "location", "next"}
 # What a follow-up was about, for an Open Questions entry when it was skipped after rephrasing.
 INTENT_TOPIC = {"date": "when it happened", "people_present": "who was there", "location": "where it happened",
                 "source": "how they know", "source_group": "how they know", "source_scope": "how they know",
@@ -149,6 +179,13 @@ class InterviewSession:
     # Every follow-up intent asked about each item: {"fact", "intent", "turn", "outcome", "why"}.
     # A question already in here is never asked again unless it carries a reason.
     asked: list[dict] = field(default_factory=list)
+    # Follow-ups not asked yet (over the limit, or the interviewee was tired). Offered at the recap,
+    # at most two and only with permission; each one is also listed in Open Questions until asked.
+    deferred: list[PendingQuestion] = field(default_factory=list)
+    fatigue_sections: list[str] = field(default_factory=list)   # "keep going" after a break offer
+    notice: Optional[str] = None      # told to the interviewee with the next question (a change of pace)
+    minimal_streak: int = 0           # minimal answers to open prompts in a row
+    skip_streak: int = 0              # skips in a row
     safety_notes: list[str] = field(default_factory=list)
     oriented: bool = False
     final_check_started: bool = False
@@ -244,7 +281,9 @@ class InterviewSession:
             open_questions=d["open_questions"], safety_notes=d["safety_notes"], oriented=d["oriented"],
             final_check_started=d["final_check_started"],
             workspace_confirmed=d.get("workspace_confirmed"),
-            asked=d.get("asked", []),
+            asked=d.get("asked", []), deferred=[pq(x) for x in d.get("deferred", [])],
+            fatigue_sections=d.get("fatigue_sections", []), notice=d.get("notice"),
+            minimal_streak=d.get("minimal_streak", 0), skip_streak=d.get("skip_streak", 0),
         )
 
     # ----------------------------------------------------------- interrupt/resume
@@ -341,7 +380,8 @@ class InterviewSession:
             self.status = SessionStatus.ACTIVE
         if self.pending is None:
             self.pending = self._advance()
-        if self.pending and self.pending.kind == "record_hook" and self.pending.field == "section":
+        if self.pending and self.pending.kind == "record_hook" and self.pending.field == "section" \
+                and not self.pending.why:   # a rephrase or an offer to skip keeps its own words
             # Worded when asked, so it fits how much the section now holds.
             one = len(self._current_facts(self.current_section)) == 1
             self.pending.text = RECORD_HOOK_QUESTION if one else SECTION_RECORD_HOOK_QUESTION
@@ -356,10 +396,17 @@ class InterviewSession:
         if self.pending.kind == "free_account" and not self.oriented:
             self.oriented = True
             text = ORIENTATION_TEXT + "\n\n" + text
+        if self.notice:   # a change of pace is always said, never done silently
+            text, self.notice = self.notice + "\n\n" + text, None
+            self.save()
         return self._emit(text)
 
     def _advance(self) -> Optional[PendingQuestion]:
         while self.queue:
+            if self.queue[0].kind == "recap" and self.queue[0].field == "0" and not self.queue[0].why:
+                offer = self._deferred_offer()
+                if offer:
+                    return offer
             q = self.queue.pop(0)
             if q.kind == "clarify" and not q.why and self._already_asked(q):
                 continue   # answered, skipped or "don't know" before: never asked again
@@ -372,6 +419,12 @@ class InterviewSession:
             self.current_section = remaining[0]
             return PendingQuestion("free_account", self.free_account_prompt(self.current_section))
         if not self.final_check_started:
+            # Anything still held back is already in Open Questions; a basis never asked is marked as such.
+            for d in self.deferred:
+                for fid in (self._group_ids(d) if d.field in ("source", "source_group", "source_scope") else []):
+                    if self.get_fact(fid).source_scope is None:
+                        self._source_unspecified(self.get_fact(fid), "not asked before the end of the interview")
+            self.deferred = []
             self.final_check_started = True
             self.current_section = "Final check"
             self.queue = [PendingQuestion("final", q, field=str(i))
@@ -389,14 +442,18 @@ class InterviewSession:
 
     @staticmethod
     def free_account_prompt(section: str) -> str:
+        """Each account section opens with a free-recall invitation, before any specific
+        question. Paperwork, request and records sections keep their own direct prompt."""
         spec = spec_for(section)
-        if spec.prompt:
-            return spec.prompt
-        if InterviewSession.is_request_section(section):
+        if InterviewSession.is_request_section(section) and not spec.prompt:
             return "What would you like to happen going forward?"
+        if spec.kind in ("procedural", "request", "records"):
+            return spec.prompt
+        if spec.prompt:
+            return f"{spec.prompt} {FREE_RECALL_TAIL}"
         if re.search(r"(?i)routine", section):
-            return f"Tell me what normally happens with {section.lower()}."
-        return f"Tell me about {section.lower()}, from the beginning."
+            return f"Tell me what normally happens with {section.lower()}, in your own words, in any order."
+        return f"Tell me about {section.lower()} in your own words — whatever comes to mind, in any order."
 
     # ----------------------------------------------------------- answering
     def answer(self, text: str, **tags) -> Optional[str]:
@@ -407,8 +464,10 @@ class InterviewSession:
         control = tags.pop("control", None) or classify.detect_control(text)
         if control == "save_later":
             return self.save_and_finish_later()
-        if control == "dont_understand" and not (q and q.kind == "clarify"):
-            control = None   # only follow-ups are rephrased; anything else is read as before
+        if control == "dont_understand" and not (q and q.kind in REPHRASABLE):
+            control = None   # preflight and safety questions are read exactly as before
+        if control is None and q and q.kind in REPHRASABLE and classify.only_distress(text):
+            control = "distress"   # "I'm tired, can we stop?": not a fact, an answer or a correction
 
         turn = Turn(len(self.turns), self.current_section or "", q.text if q else None, text, control=control)
         self.turns.append(turn)
@@ -438,13 +497,26 @@ class InterviewSession:
             return None
 
         kind = q.kind if q else "free_account"
-        if kind == "clarify" and (q.why or "").startswith("offer_skip") and (
+        if q and (q.why or "").startswith("offer_skip") and (
                 control == "dont_understand" or (control is None and _is_no(text))):
             control = "skip"   # "no" (or still not understood) to "skip it, or answer in your own words?"
+        outcome = {"skip": "skipped", "not_sure": "dont_know", "dont_understand": "not_understood",
+                   "distress": "paused"}.get(control, "answered")
         if kind == "clarify":   # logged after the answer's meaning is settled, so the outcome is the real one
-            self._log_asked(q, turn.index, {"skip": "skipped", "not_sure": "dont_know",
-                                            "dont_understand": "not_understood"}.get(control, "answered"))
-        if control == "dont_understand":
+            self._log_asked(q, turn.index, outcome)
+        elif q and (control in ("dont_understand", "distress") or q.why
+                    or kind in ("deferred_permission", "break_offer")):
+            self._log_other(q, turn.index, outcome)
+        self._track_pace(q, kind, text, control)
+        if control == "distress":
+            self._offer_break(q, requeue=True)
+        elif kind == "break_offer":
+            reply = self._apply_break_answer(q, text, control)
+            self.save()
+            return reply
+        elif kind == "deferred_permission":
+            self._apply_deferred_permission(q, text, control)
+        elif control == "dont_understand":
             self._rephrase(q)
         elif control in ("skip", "not_sure"):
             self._apply_control(control, q, turn.index)
@@ -470,6 +542,8 @@ class InterviewSession:
             self._handle_check_followup(q, text, turn.index)
         elif kind == "correction_target":
             self._resolve_correction_target(q, text)
+        if control != "distress" and kind not in ("break_offer",) and self._tired(text):
+            self._offer_break(q, requeue=False)
         self.save()
         return None
 
@@ -493,6 +567,8 @@ class InterviewSession:
         label = "Skipped by interviewee" if control == "skip" else "Interviewee not sure / doesn't remember"
         if q is None:
             return
+        if (q.why or "").startswith("offer_skip") and q.kind != "clarify":
+            q = replace(q, text=f"{q.kind.replace('_', ' ')} question (not understood, then skipped)")
         if q.kind == "preflight":
             self.intake.append(IntakeItem(q.field, q.text, "", self._provenance(turn_index),
                                           status="skipped" if control == "skip" else "not_sure"))
@@ -522,7 +598,8 @@ class InterviewSession:
                 return
             if control == "skip":
                 fact.open_questions.append(f"{label}: {q.text}")
-                asked = (f"{INTENT_TOPIC.get(q.field, q.field)} (not understood, then skipped)" if q.why else q.text)
+                asked = (f"{INTENT_TOPIC.get(q.field, q.field)} (not understood, then skipped)"
+                         if (q.why or "").startswith("offer_skip") else q.text)
                 if q.field != "discrepancy":     # unresolved discrepancies are listed already
                     self.open_questions.append(f"{fact.id}: skipped: {asked}")
             else:
@@ -724,15 +801,14 @@ class InterviewSession:
             if first:
                 qs.append(PendingQuestion("clarify", "Where did this happen?", fact.id, "location"))
             else:
-                self.open_questions.append(f"{fact.id}: not asked, to keep the interview short: "
-                                           f"Where did this happen?")
+                self._defer(PendingQuestion("clarify", "Where did this happen?", fact.id, "location"),
+                            "to keep the interview short")
         if fact.source in (SourceOfKnowledge.UNCERTAIN, SourceOfKnowledge.UNKNOWN) and not fact.told_by:
             qs.append(PendingQuestion("clarify", "How do you know that?", fact.id, "source"))
         if fact.certainty == Certainty.HEDGED:
             qs.append(PendingQuestion("clarify", CERTAINTY_QUESTION, fact.id, "certainty"))
         if last and routine:
-            qs.append(PendingQuestion("clarify", "Was there a particular time that was different?",
-                                      fact.id, "next"))
+            qs.append(PendingQuestion("clarify", PATTERN_INSTANCE_QUESTION, fact.id, "next"))
         elif last and event:
             qs.append(PendingQuestion("clarify", "What happened next?", fact.id, "next"))
         priority = ["source", "certainty", "date", "people_present", "location", "next"]
@@ -741,8 +817,12 @@ class InterviewSession:
                                                                            for q in qs))]
         asked = [q for q in qs if q in keep and not self._already_asked(q)]
         for q in qs:
-            if q not in keep and q.field != "people_present":   # "who was present" is listed for every fact
-                self.open_questions.append(f"{fact.id}: not asked, to keep the interview short: {q.text}")
+            if q not in keep:
+                self._defer(q, "to keep the interview short")
+        if fact.topic in self.fatigue_sections:   # "keep going" after a break offer: nothing more asked now
+            for q in asked:
+                self._defer(q, "the interviewee was tired")
+            asked = []
         # The "anything to document this?" question is asked once per section,
         # just before the end-of-section check; the recap text itself is built
         # when asked, so it reflects everything recorded.
@@ -786,6 +866,8 @@ class InterviewSession:
             self._apply_scope(q, text, turn_index, **tags)
         elif q.field == "certainty":
             fact.open_questions.append(f"Certainty clarification (interviewee's words): {text}")
+            fact.certainty_readings.append({"text": text, "turn": turn_index, "at": _now(),
+                                            "scale": classify.certainty_scale(text)})
         elif q.field == "discrepancy":
             d = self._discrepancy_for(q)
             if d:
@@ -866,7 +948,8 @@ class InterviewSession:
     def _already_asked(self, q: PendingQuestion) -> bool:
         intent = self._intent(q)
         roots = {self._root(fid) for fid in self._group_ids(q)}
-        return any(a["fact"] in roots and a["intent"] == intent for a in self.asked)
+        # Interrupted by "I'm tired" is not asked: it can still be offered later.
+        return any(a["fact"] in roots and a["intent"] == intent and a["outcome"] != "paused" for a in self.asked)
 
     def _log_asked(self, q: PendingQuestion, turn_index: int, outcome: str) -> None:
         for fid in self._group_ids(q):
@@ -881,10 +964,114 @@ class InterviewSession:
                                                  why="offer_skip: not understood after rephrasing"))
             return
         fact = self.get_fact(q.fact_id) if q.fact_id else None
-        text = (REPHRASED_ROUTINE_NEXT if q.field == "next" and fact and fact.kind == EventKind.ROUTINE
-                else REPHRASED.get(q.field, "Could you tell me about that in your own words?"))
+        if q.kind == "clarify":
+            text = (REPHRASED_ROUTINE_NEXT if q.field == "next" and fact and fact.kind == EventKind.ROUTINE
+                    else REPHRASED.get(q.field, "Could you tell me about that in your own words?"))
+        elif q.kind == "free_account":
+            text = (f"In your own words, what would you like me to know about {(self.current_section or '').lower()}? "
+                    f"Anything that comes to mind is fine, in any order. It's fine to say there's nothing.")
+        else:
+            text = REPHRASED_BY_KIND.get((q.kind, q.field)) or REPHRASED_BY_KIND.get((q.kind, None)) \
+                or "Could you tell me about that in your own words?"
         self.queue.insert(0, PendingQuestion(q.kind, REPHRASE_PREFIX + text, q.fact_id, q.field, ref=q.ref,
                                              why="rephrased: interviewee did not understand"))
+
+    def _log_other(self, q: PendingQuestion, turn_index: int, outcome: str) -> None:
+        """Questions that are not about one item (openers, recaps, offers), keyed by section."""
+        self.asked.append({"fact": None, "intent": f"{q.kind}:{q.field or ''}@{self.current_section}",
+                           "turn": turn_index, "outcome": outcome, "why": q.why})
+
+    # ----------------------------------------------------------- questions held for the recap
+    @staticmethod
+    def _deferred_priority(q: PendingQuestion) -> int:
+        return {"source": 0, "source_group": 0, "source_scope": 0, "discrepancy": 1, "certainty": 2}.get(q.field, 3)
+
+    def _defer(self, q: PendingQuestion, why: str) -> None:
+        """Not asked now. Listed in Open Questions until it is asked, so nothing is lost silently."""
+        self.deferred.append(replace(q, why=f"deferred: {why}"))
+        # "Who was present" is already listed for every item, so a held one isn't listed twice.
+        if q.field != "people_present" or why != "to keep the interview short":
+            self.open_questions.append(f"{q.fact_id}: not asked, {why}: {q.text}")
+
+    def _deferred_candidates(self, section: Optional[str]) -> list[PendingQuestion]:
+        live = {f.id for f in self._current_facts(section)}
+        out = [q for q in self.deferred if q.fact_id in live and not self._already_asked(replace(q, why=None))]
+        return sorted(out, key=self._deferred_priority)
+
+    def _deferred_offer(self) -> Optional[PendingQuestion]:
+        section = self.current_section
+        if any(a["intent"] == f"deferred_permission:@{section}" for a in self.asked):
+            return None
+        n = min(2, len(self._deferred_candidates(section)))
+        if not n:
+            return None
+        text = ("Two quick ones before we wrap this part — OK, or save them for later?" if n == 2 else
+                "One quick one before we wrap this part — OK, or save it for later?")
+        return PendingQuestion("deferred_permission", text)
+
+    def _apply_deferred_permission(self, q: PendingQuestion, text: str, control: Optional[str]) -> None:
+        section = self.current_section
+        cands = self._deferred_candidates(section)
+        if control == "dont_understand":
+            self._rephrase(q)
+            return
+        yes = control is None and re.match(r"(?i)\s*(?:yes|yeah|yep|sure|ok(?:ay)?|fine|go ahead|go on|now"
+                                           r"|alright|all right|sounds good|let'?s do (?:it|them|that))\b", text) \
+            and not re.search(r"(?i)\b(?:later|save|not now|no)\b", text)
+        now = cands[:2] if yes else []
+        for d in reversed(now):
+            self.queue.insert(0, replace(d, why="deferred: asked at the recap, with permission"))
+            self.open_questions = [o for o in self.open_questions
+                                   if not (o.startswith(f"{d.fact_id}: not asked") and o.endswith(d.text))]
+        for d in cands:
+            if d not in now and d.field in ("source", "source_group", "source_scope"):
+                for fid in self._group_ids(d):
+                    if self.get_fact(fid).source_scope is None:
+                        self._source_unspecified(self.get_fact(fid), "not asked: saved for later")
+        self.deferred = [d for d in self.deferred if d not in cands]
+
+    # ----------------------------------------------------------- tiredness and distress
+    def _track_pace(self, q: Optional[PendingQuestion], kind: str, text: str, control: Optional[str]) -> None:
+        self.skip_streak = self.skip_streak + 1 if control == "skip" else 0
+        if (kind, q.field if q and kind == "clarify" else None) in OPEN_PROMPTS:
+            minimal = control in ("skip", "not_sure") or _is_nothing_more(text) or len(text.split()) <= 2
+            self.minimal_streak = self.minimal_streak + 1 if minimal else 0
+
+    def _tired(self, text: str) -> bool:
+        """3+ minimal answers to open prompts in a row, 2+ skips in a row, or said in words.
+        Short answers alone are never read as tiredness."""
+        return self.status == SessionStatus.ACTIVE and (
+            classify.distress_cue(text) or self.skip_streak >= 2 or self.minimal_streak >= 3)
+
+    def _offer_break(self, q: Optional[PendingQuestion], requeue: bool) -> None:
+        section = self.current_section
+        if section in self.fatigue_sections or any(a["intent"] == f"break_offer:@{section}" for a in self.asked):
+            if requeue and q:
+                self.queue.insert(0, replace(q, why="asked again after the interviewee said they were tired"))
+            return
+        if requeue and q:
+            self.queue.insert(0, replace(q, why="asked again after a break offer"))
+        self.queue.insert(0, PendingQuestion("break_offer", BREAK_OFFER))
+        self.skip_streak = self.minimal_streak = 0
+
+    def _apply_break_answer(self, q: PendingQuestion, text: str, control: Optional[str]) -> Optional[str]:
+        if control == "dont_understand":
+            self._rephrase(q)
+            return None
+        keep_going = control is None and re.search(
+            r"(?i)\b(?:keep going|go on|carry on|continue|keep at it|let'?s (?:go|continue|keep going)"
+            r"|i'?m (?:ok|okay|fine))\b", text) and not re.search(r"(?i)\b(?:stop|pause|later|break)\b", text)
+        if not keep_going:   # pause, stop, later, or unclear: everything is saved and nothing more is asked now
+            self.interrupt()
+            return SAVED_FOR_LATER
+        section = self.current_section
+        self.fatigue_sections.append(section)
+        live = {f.id for f in self._current_facts(section)}
+        for q in [q for q in self.queue if q.kind == "clarify" and q.fact_id in live]:
+            self.queue.remove(q)
+            self._defer(q, "the interviewee was tired")
+        self.notice = KEEP_SHORT_NOTICE
+        return None
 
     # ----------------------------------------------------------- basis of knowledge for several items
     @staticmethod
@@ -896,7 +1083,8 @@ class InterviewSession:
     def _scope_question(self, ids: list[str]) -> str:
         labels = [self._label(self.get_fact(i)) for i in ids]
         listed = ", ".join(labels[:-1]) + (", and " if len(labels) > 2 else " and ") + labels[-1]
-        return f"Does that go for all of them ({listed}), or is any of them different? {SCOPE_NOT_SURE}"
+        return (f"Which of those events does that explanation apply to: {listed}? You can say all of them, "
+                f"some of them, or that you're not sure.")
 
     def _apply_group_source(self, ids: list[str], basis_turn: int, confirm_turn: Optional[int], scope: str,
                             **tags) -> None:
@@ -919,11 +1107,17 @@ class InterviewSession:
         differs = bool(_DIFFERENT.search(text))
         if _all_different(text):
             different, same = ids, []
+        elif _HEDGED.search(text):
+            different, same = None, None          # "most of them", "I think so": not a clear scope
         elif named and differs:
             different, same = named, [i for i in ids if i not in named]
         elif _covers_all(text) and not differs:
             different, same = [], ids
-        else:   # unclear, a bare yes/no, or not sure: nothing is applied
+        elif named:                               # "just the first two": only the ones named
+            different, same = [i for i in ids if i not in named], named
+        else:
+            different, same = None, None
+        if same is None:   # unclear, a bare yes/no, or not sure: nothing is applied
             for fid in ids:
                 self._source_unspecified(self.get_fact(fid), f'scope not confirmed: "{text}"')
             return
@@ -932,12 +1126,16 @@ class InterviewSession:
                                      "confirmed_all" if not different else "confirmed_except", **tags)
         for fid in reversed(different):
             self.queue.insert(0, PendingQuestion("clarify", f"How do you know about {self._label(self.get_fact(fid))}?",
-                                                 fid, "source", why="interviewee said this one was different"))
+                                                 fid, "source", why="the explanation does not cover this one"))
 
     def _named_items(self, text: str, ids: list[str]) -> list[str]:
         """Items the answer points to: "item 2", "the first/last one", or words only that item used."""
         out = []
         t = text.lower()
+        m = re.search(r"\b(first|last) (two|three|four|2|3|4)\b", t)
+        if m:
+            k = {"two": 2, "three": 3, "four": 4}.get(m.group(2)) or int(m.group(2))
+            out += ids[:k] if m.group(1) == "first" else ids[-k:]
         for n, word in enumerate(("first", "second", "third", "fourth", "fifth")):
             if re.search(rf"\b{word}\b", t) and n < len(ids):
                 out.append(ids[n])
@@ -983,6 +1181,8 @@ class InterviewSession:
                 turn_index = raw.turn_index
         certainty, hedges = classify.classify_certainty(statement)
         detected = classify.classify_source(statement)
+        if kind == EventKind.UNSPECIFIED and classify.is_pattern(statement):
+            kind = EventKind.ROUTINE   # stored as a pattern, never as one occasion
         if detected == SourceOfKnowledge.REQUEST and source is None:
             raise ValueError("this is a requested outcome; use record_request()")
         fact = Fact(id=f"F-{len(self.facts) + 1:03d}", topic=topic, statement=statement,
@@ -1516,7 +1716,10 @@ _NO = re.compile(rf"(?i)\s*{_NO_WORD}(?:[\s,.!;:-]+{_NO_WORD})*[.!]?\s*")
 _ALL = re.compile(r"(?i)\b(?:all(?: of (?:them|those|these|it))?|all (?:two|three|four|five)|every(?:thing| one|one)"
                   r"|each (?:of them|one)|both|the same (?:for|way for) (?:all|each|every)|same for all)\b")
 _DIFFERENT = re.compile(r"(?i)\b(?:except|apart from|other than|different|differently|not (?:the|for|that)"
-                        r"|but (?:the|not)|only)\b")
+                        r"|but (?:the|not))\b")
+# Hedged or partial wording never confirms which events an explanation covers.
+_HEDGED = re.compile(r"(?i)\b(?:most(?: of them)?|some(?: of them)?|a few|i think|i guess|probably|maybe|mostly"
+                     r"|kind of|sort of|i suppose|not sure|might|possibly)\b")
 _ALL_DIFFERENT = re.compile(r"(?i)\b(?:none of them|(?:they'?re|they are|it'?s|each (?:one )?is|all) (?:all )?different"
                             r"|each (?:one )?(?:was|is) different|different (?:for|with) each)\b")
 _COMMON = {"that", "this", "with", "then", "they", "them", "there", "were", "what", "when", "about", "from",

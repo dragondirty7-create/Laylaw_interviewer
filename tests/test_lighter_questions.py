@@ -8,7 +8,7 @@ from conftest import new_session
 from laylaw.interviewer import SourceOfKnowledge, VerificationStatus, outputs, paths
 from laylaw.interviewer.paths import SectionSpec
 from laylaw.interviewer.session import (
-    RECORD_HOOK_QUESTION, SECTION_RECORD_HOOK_QUESTION, _is_nothing_more, _is_no,
+    PATTERN_INSTANCE_QUESTION, RECORD_HOOK_QUESTION, SECTION_RECORD_HOOK_QUESTION, _is_nothing_more, _is_no,
 )
 
 FOLLOW_UP_KINDS = ("clarify", "record_hook")
@@ -165,7 +165,7 @@ def test_routine_fact_gets_no_where_or_what_next(ws):
     texts = [q.text for q in s.queue if q.kind == "clarify"]
     assert "Where did this happen?" not in texts and "What happened next?" not in texts
     assert "Who else was there?" not in texts
-    assert "Was there a particular time that was different?" in texts
+    assert PATTERN_INSTANCE_QUESTION in texts          # A2 P1 1.4: one time that stands out
 
 
 def test_state_gets_no_who_else_where_or_next(ws):

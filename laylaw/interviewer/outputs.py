@@ -156,6 +156,11 @@ def interview_record(s: "InterviewSession") -> str:
         src = f" [from answer {f.raw_answer_id}]" if f.raw_answer_id else ""
         ctx = f" [answering: {f.question_context}]" if f.question_context else ""
         lines.append(f"- {f.id} ({f.topic}) {neutral_fact_line(f, s)}{src}{ctx}")
+        # "I don't know" is an answer: shown with the item, never left blank or filled in.
+        for a in s.asked:
+            if a["fact"] == f.id and a["outcome"] == "dont_know":
+                lines.append(f"    Interviewee doesn't know: {RECAP_LABELS.get(a['intent'], a['intent'])} "
+                             f"(turn {a['turn']})")
     if s.raw_answers:
         lines += ["", "ANSWERS AS ENTERED (the interviewee's own text; not a transcript)"]
         lines += [f"- {r.id} (turn {r.turn_index}, {r.section}): {r.text}" for r in s.raw_answers]
