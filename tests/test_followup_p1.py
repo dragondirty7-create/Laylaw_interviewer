@@ -126,7 +126,7 @@ def _no_new_record(s, before):
     assert (len(s.facts), len(s.corrections), len(s.outcomes), len(s.records)) == before
 
 
-@pytest.mark.parametrize("kind, field", [("recap", "0"), ("recap", "1"), ("recap", "2"), ("final", "0"),
+@pytest.mark.parametrize("kind, field", [("recap", "0"), ("recap", "1"), ("final", "0"),
                                          ("final", "1"), ("final", "3"), ("record_hook", "section")])
 def test_huh_at_recap_final_or_record_question_is_never_stored(session, kind, field):
     session.next_question()
@@ -149,11 +149,11 @@ def test_huh_at_recap_final_or_record_question_is_never_stored(session, kind, fi
 def test_huh_then_an_answer_at_the_recap_is_handled_normally(session):
     session.next_question()
     session.answer("Sam Rowe arrived late.")
-    _to(session, lambda p: p.kind == "recap" and p.field == "2")
+    _to(session, lambda p: p.kind == "recap" and p.field == "0")
     session.answer("Huh?")
     session.next_question()
-    session.answer("Pip cried in the car.")
-    assert [f.statement for f in session.facts][-1] == "Pip cried in the car."
+    session.answer("Pip also cried in the car.")
+    assert [f.statement for f in session.facts][-1] == "Pip also cried in the car."
 
 
 def test_huh_at_the_opening_prompt_twice_then_skip(session):
@@ -193,7 +193,7 @@ def test_held_questions_are_offered_once_at_the_recap_with_permission(session):
         session.next_question()
         assert session.pending.field == field and session.pending.fact_id == f.id and session.pending.why
         session.answer("Just me")
-    assert session.next_question().endswith("Did I get anything wrong?")
+    assert session.next_question().endswith("What did I get wrong or leave out?")
     held = [o for o in session.open_questions if o.startswith(f"{f.id}: not asked")]
     assert held == [f"{f.id}: not asked, to keep the interview short: What happened next?"]   # the third stays listed
     assert_no_repeat(session)
@@ -203,7 +203,7 @@ def test_saving_held_questions_for_later_keeps_them_in_open_questions(session):
     f = _over_the_limit(session)
     _to(session, lambda p: p.kind == "deferred_permission")
     session.answer("Save it for later.")
-    assert session.next_question().endswith("Did I get anything wrong?")
+    assert session.next_question().endswith("What did I get wrong or leave out?")
     assert f"{f.id}: not asked, to keep the interview short: What happened next?" in session.open_questions
     assert f"{f.id}: not asked, to keep the interview short: Where did this happen?" in session.open_questions
 
@@ -227,7 +227,7 @@ def test_at_most_two_held_questions_and_the_basis_first(session):
         asked.append(session.pending.field)
         session.answer("I was there for all of them.")
     assert asked[0] == "source_group"                         # unresolved provenance comes first
-    assert session.next_question().endswith("Did I get anything wrong?")
+    assert session.next_question().endswith("What did I get wrong or leave out?")
     assert_no_repeat(session)
     assert_provenance_closed(session)
 

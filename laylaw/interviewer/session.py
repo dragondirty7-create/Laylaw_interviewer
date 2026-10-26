@@ -31,21 +31,25 @@ ORIENTATION_TEXT = (
     "don't remember, or aren't sure. I won't fill in missing details for you. "
     "You can also say \"skip\", \"not sure\", or \"save and finish later\" at any point."
 )
+# One open check for what's wrong or missing, then the separate check that nothing was
+# made to sound more certain than the interviewee meant (kept on its own on purpose).
 END_OF_SECTION_QUESTIONS = [
-    "Did I get anything wrong?",
+    "What did I get wrong or leave out?",
     "Did I make anything sound more certain than you intended?",
-    "Is there anything important I missed?",
 ]
 FINAL_CHECK_QUESTIONS = [
-    "Is there anything important that I didn't ask about?",
-    "Is there anything we discussed that you want to correct?",
-    "Did I make anything sound more definite than you remember it?",
+    "Is there something important I didn't ask about?",
+    "Is there something we discussed that you'd like to correct?",
+    "Is there something I made sound more definite than you remember it?",
     "What should we follow up on next?",
 ]
-RECORD_HOOK_QUESTION = "Is there anything that might help document or date this?"
+RECORD_HOOK_QUESTION = "Is there something else that might help document this?"
 # Asked once, before the end-of-section recap, when the section has more than one item.
-SECTION_RECORD_HOOK_QUESTION = ("Is there anything that might help document or date what you've told me "
+SECTION_RECORD_HOOK_QUESTION = ("Is there something else that might help document what you've told me "
                                 "in this section?")
+# An answer to "what did I get wrong or leave out?" that doesn't say which it is.
+WHICH_KIND_QUESTION = ("Should I change something I already have, or add this as something new? "
+                       "You can also say you're not sure.")
 SAFETY_QUESTION = (
     "Before we go on: are you safe right now? If you or anyone else is in immediate danger, "
     "please call 911 (or your local emergency number) now. Tell me when you're ready, and "
@@ -75,9 +79,9 @@ REPHRASED_ROUTINE_NEXT = "Can you think of one particular time it happened, like
 FREE_RECALL_TAIL = "In your own words, whatever comes to mind, in any order."
 # "I don't understand" outside a follow-up: said another way once, never stored as an answer.
 REPHRASED_BY_KIND = {
-    ("recap", "0"): "Which parts of what I read back, if any, don't match what you remember?",
+    ("recap", "0"): "Which parts of what I read back, if any, don't match what you remember, or are missing?",
     ("recap", "1"): "Which parts, if any, did I make sound more sure than you are?",
-    ("recap", "2"): "What, if anything, did I leave out?",
+    ("recap", "2"): "What, if anything, did I leave out?",   # sessions saved before the recap had two checks
     ("final", "0"): "What, if anything, should I have asked you about?",
     ("final", "1"): "Which parts, if any, would you like to change?",
     ("final", "2"): "Which parts, if any, did I make sound more definite than you remember?",
@@ -93,7 +97,7 @@ REPHRASED_BY_KIND = {
 }
 REPHRASABLE = {"clarify", "free_account", "recap", "final", "record_hook", "check_followup", "correction_target",
                "procedural", "deferred_permission", "break_offer"}
-OPEN_PROMPTS = {("free_account", None), ("record_hook", None), ("recap", "2"), ("final", "0"),
+OPEN_PROMPTS = {("free_account", None), ("record_hook", None), ("recap", "0"), ("recap", "2"), ("final", "0"),
                 ("clarify", "next"), ("clarify", "source"), ("clarify", "source_group"), ("clarify", "certainty")}
 BREAK_OFFER = "We can pause here and pick up later — everything's saved. Or keep going?"
 KEEP_SHORT_NOTICE = ("Okay, let's keep going. I'll keep the rest of this part short, and anything I leave out is "
@@ -607,6 +611,9 @@ class InterviewSession:
             return
         if q.kind == "correction_target":
             self.open_questions.append(f"Correction {q.field} not yet matched to an item ({label.lower()})")
+            return
+        if q.kind == "check_followup" and (q.field or "").endswith(":which_kind"):
+            self._apply_which_kind(q.field.split(":", 1)[0], q, "")   # earlier words kept, nothing guessed
             return
         if q.kind in ("recap", "final", "record_hook", "check_followup"):
             self.open_questions.append(f"{label}: {q.text}")
@@ -1414,6 +1421,9 @@ class InterviewSession:
 
     def _handle_check_followup(self, q: PendingQuestion, text: str, turn_index: int) -> None:
         stage, role = (q.field or "recap:correction").split(":", 1)
+        if role == "which_kind":
+            self._apply_which_kind(stage, q, text)
+            return
         if _is_no(text):
             return
         if _is_bare_ack(text):
@@ -1424,6 +1434,13 @@ class InterviewSession:
 
     def _route_check_content(self, stage: str, role: str, question: str, text: str, turn_index: int) -> None:
         start = _content_start(text)
+        if role == "wrong_or_missed":   # cues are read in the whole answer ("Actually, ..." is a cue here)
+            fix, add = bool(_CORRECTION_CUE.search(text)), bool(_ADDITION_CUE.search(text))
+            if fix == add:   # neither or both: never guessed, the interviewee says which
+                self.queue.insert(0, PendingQuestion("check_followup", WHICH_KIND_QUESTION,
+                                                     field=f"{stage}:which_kind", ref=f"{turn_index}|{question}"))
+                return
+            role = "correction" if fix else "addition"
         if role in ("correction", "certainty"):
             candidates = [f.id for f in self._current_facts(self.current_section if stage == "recap" else None)]
             self._start_correction(text, "recap" if stage == "recap" else "final_check", turn_index,
@@ -1432,6 +1449,21 @@ class InterviewSession:
             self._record_addition(text, start, turn_index, question)
         else:
             self.open_questions.append(f"Final check - {question} -> {text}")
+
+    def _apply_which_kind(self, stage: str, q: PendingQuestion, reply: str) -> None:
+        """The interviewee's earlier words are routed as they say: a change to an item, or a new
+        item. "Not sure" (or anything unclear) keeps the words in Open Questions; nothing is guessed."""
+        turn_s, question = q.ref.split("|", 1)
+        turn = next(t for t in self.turns if t.index == int(turn_s))
+        change = re.search(r"(?i)\b(?:change|fix|correct|replace|wrong|item|number|#)\b|^\s*\d{1,3}\s*[.!]?\s*$", reply)
+        new = re.search(r"(?i)\b(?:new|add|also|another|separate|extra)\b", reply)
+        if change and not new:
+            self._route_check_content(stage, "correction", question, turn.answer, turn.index)
+        elif new and not change:
+            self._route_check_content(stage, "addition", question, turn.answer, turn.index)
+        else:
+            self.open_questions.append(f"Recap - not yet matched as a change or an addition "
+                                       f"(interviewee's words, turn {turn.index}): {turn.answer}")
 
     def _record_addition(self, text: str, start: int, turn_index: int, question: str = "") -> None:
         """Something the interviewee says was missed: recorded as new items in
@@ -1771,13 +1803,20 @@ _ACK = re.compile(rf"(?i)\s*{_ACK_WORD}(?:[\s,.!;:-]+{_ACK_WORD})*[\s.!,]*")
 _LEAD_ACK = re.compile(r"(?i)\s*(?:yes|yeah|yep|yup|actually)\b[\s,.:;!\-–—]*")
 
 # What each check question is asking for.
-_CHECK_ROLES = {("recap", "0"): "correction", ("recap", "1"): "certainty", ("recap", "2"): "addition",
+# ("recap", "2") is the separate "missed" check of sessions saved before the two-check recap.
+_CHECK_ROLES = {("recap", "0"): "wrong_or_missed", ("recap", "1"): "certainty", ("recap", "2"): "addition",
                 ("final", "0"): "not_asked", ("final", "1"): "correction", ("final", "2"): "certainty",
                 ("final", "3"): "follow_up"}
 _CHECK_FOLLOWUPS = {"correction": "What should I change?",
                     "certainty": "Which part did I make sound more certain than you meant?",
                     "addition": "What did I miss?",
-                    "not_asked": "What should I have asked about?"}
+                    "not_asked": "What should I have asked about?",
+                    "wrong_or_missed": "What should I change or add?"}
+# Words that say which one an answer is. With neither (or both), the interviewee is asked.
+_CORRECTION_CUE = re.compile(r"(?i)\b(?:actually|not|wasn'?t|isn'?t|weren'?t|didn'?t|it was|it is|that was|should be"
+                             r"|instead|wrong|change|correction|i meant|rather than|mistake)\b")
+_ADDITION_CUE = re.compile(r"(?i)\b(?:also|too|another|as well|in addition|i forgot|forgot to (?:say|mention)"
+                           r"|you missed|you left out|left out|missing|one more thing|add)\b")
 
 
 def _is_bare_ack(text: str) -> bool:

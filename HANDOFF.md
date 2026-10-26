@@ -5,7 +5,7 @@ reads it before starting and updates it when they finish. The Drive *PROJECT IND
 here instead of keeping its own copy. Older handoff notes are in [`docs/handoffs/`](docs/handoffs/)
 and are history: nothing in them is an open task unless this page lists it.
 
-**Last updated:** 2026-10-25 (America/Los_Angeles) by Claude Code: A2 P1 built as a draft PR stacked on #16 (verified; see §4).
+**Last updated:** 2026-10-25 (America/Los_Angeles) by Claude Code: A2 P1 (#17) and the recap wording draft built and verified (see §4).
 
 ## Ground rules (unchanged)
 
@@ -119,7 +119,14 @@ Soul reviews each before the next starts. Ready-to-run Claude Code briefs are in
     - Patterns ("always", "every Friday") stored as patterns, with "Is there one time that stands out…?".
       Certainty kept once, in the person's words. "I don't know" shown in the interview record.
     - Four tests changed on purpose (table in the PR).
-  - **Next:** the 0.4 wording draft, stacked on A2 P1.
+  - **A2 recap wording: built, draft PR** (branch `ccr-346c90bc-1umwms-a2-wording`, stacked on #17). Tests:
+    `tests/test_recap_wording.py`.
+    - Recap: "What did I get wrong or leave out?" plus the separate "more certain than you intended" check.
+      An answer with no clear correction or addition words gets "Should I change something I already have,
+      or add this as something new?"; an unclear reply keeps the words in Open Questions.
+    - Record question "Is there something else that might help document this?"; final check uses
+      "something". The record question still comes before the recap (the optional move wasn't made).
+    - Changed tests are listed in the PR (mostly pinned wording; four audit tests gain the change-or-add step).
 - **B. Case-level document memory** (engine + web). Attach uploads and interviews to one case record.
   Start each interview from a short "what's on file" brief the client confirms or corrects, keeping
   where each fact came from (document or client) separate. Voice-kit checkpoints load into the same case.
