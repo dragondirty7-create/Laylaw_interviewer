@@ -97,7 +97,7 @@ SECTION_SPECS: dict[str, SectionSpec] = {
         followups=(("counsel_contact", "Have you been able to speak with them yet?"),)),
     "Procedural history": SectionSpec(
         "Procedural history",
-        prompt="What has happened in the case so far, in court or with paperwork, from the beginning?",
+        prompt="What has happened in the case so far, in court or with paperwork?",
         kind="narrative"),
     "Available records": SectionSpec(
         "Available records",
@@ -119,8 +119,8 @@ SECTION_SPECS: dict[str, SectionSpec] = {
         "Current household", prompt="Tell me about the children and the current living arrangements."),
     "Specific incidents": SectionSpec(
         "Specific incidents",
-        prompt=("Are there particular events that matter for this case? If so, tell me about them from the "
-                "beginning. It's fine to say there aren't any.")),
+        prompt=("Are there particular events that matter for this case? If so, tell me about them. "
+                "It's fine to say there aren't any.")),
     "Current parenting routine": SectionSpec(
         "Current parenting routine", prompt="Tell me what normally happens with the current parenting routine.",
         kind="routine"),

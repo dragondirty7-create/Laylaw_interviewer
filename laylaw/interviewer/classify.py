@@ -124,6 +124,54 @@ _EVENT_CUE = re.compile(
     r"suddenly|started|stopped|\w+ed)\b")
 
 
+# "He always...", "every Friday": a pattern, not one occasion. Who / where / how
+# they know is never copied from a pattern to a single event.
+_PATTERN = re.compile(
+    r"(?i)\b(?:always|usually|typically|normally|generally|regularly|often|tends? to|all the time|every time"
+    r"|each time|whenever|most (?:days|nights|weeks|weekends|mornings|evenings|times)"
+    r"|every (?:day|night|week|weekend|month|morning|evening|other|monday|tuesday|wednesday|thursday|friday"
+    r"|saturday|sunday)|on (?:mondays|tuesdays|wednesdays|thursdays|fridays|saturdays|sundays|weekends))\b")
+
+
+def is_pattern(text: str) -> bool:
+    return bool(_PATTERN.search(text))
+
+
+# Tiredness or distress said in words. Short answers alone are never read this way.
+_DISTRESS = (r"i'?m (?:so |really |very )?(?:tired|exhausted|worn out|drained|overwhelmed)|i am (?:so |really |very )?"
+             r"(?:tired|exhausted|worn out|drained|overwhelmed)|this is (?:really |so |too )?(?:hard|difficult|a lot|too much)"
+             r"|(?:can|could) we (?:stop|take a break|pause)|i need (?:a break|to stop|to take a break)"
+             r"|i (?:want|would like|'d like) to stop|i can'?t do this(?: anymore| right now)?|it'?s too much")
+_DISTRESS_RE = re.compile(rf"(?i)\b(?:{_DISTRESS})\b")
+_DISTRESS_ONLY = re.compile(rf"(?i)\s*(?:(?:{_DISTRESS})(?:\s*(?:now|right now|for now|for a bit|please|sorry))?[\s,.!?;:-]*)+")
+
+
+def distress_cue(text: str) -> bool:
+    return bool(_DISTRESS_RE.search(text))
+
+
+def only_distress(text: str) -> bool:
+    """The whole answer is the cue ("I'm tired, can we stop?"): nothing to record as a fact."""
+    return bool(_DISTRESS_ONLY.fullmatch(text))
+
+
+def certainty_scale(text: str) -> Optional[str]:
+    """A scale word only when the interviewee's wording is unambiguous; otherwise None."""
+    t = text.lower()
+    unsure = re.search(r"\b(?:not (?:very |that |really )?(?:sure|certain)|unsure|no idea|guess(?:ing)?|don'?t know)\b", t)
+    fairly = re.search(r"\b(?:pretty|fairly|mostly|quite) (?:sure|certain)\b", t)
+    sure = re.search(r"\b(?:sure|certain|positive|definite(?:ly)?|100 ?%)\b", t)
+    if re.search(r"\b(?:but|except|not about|though)\b", t):
+        return None   # part sure, part not: kept only in their words
+    if unsure:
+        return "unsure"
+    if fairly:
+        return "fairly sure"
+    if sure:
+        return "sure"
+    return None
+
+
 def describes_state(text: str) -> bool:
     return bool(_STATE_VERB.search(text)) and not _EVENT_CUE.search(text)
 

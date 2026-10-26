@@ -77,7 +77,7 @@ def test_scope_is_confirmed_in_the_persons_own_words(session):
     assert session.pending.field == "source_scope"
     for f in session.facts:
         assert " ".join(f.statement.split()[:3]) in q                            # their words as labels
-    assert "or is any of them different?" in q and "not sure" in q
+    assert "Which of those events does that explanation apply to" in q and "not sure" in q   # Soul, 2026-10-25
     assert "same for all of them?" not in q.lower()
     session.answer("All of them.")
     assert all(f.source == SourceOfKnowledge.PERSONAL_OBSERVATION and f.source_scope == "confirmed_all"
@@ -237,11 +237,13 @@ def test_routine_rephrase_keeps_routine_wording(ws):
     assert s.next_question() == REPHRASE_PREFIX + REPHRASED_ROUTINE_NEXT
 
 
-def test_dont_understand_outside_follow_ups_is_read_as_before(session):
+def test_dont_understand_at_an_opening_prompt_is_never_a_fact(session):
+    """Soul, 2026-10-25 (decision 6): rephrased, not recorded."""
     session.next_question()
     session.answer("What do you mean?")
-    assert session.turns[-1].control is None                        # handled exactly as before this change
-    assert not any(q.why for q in session.queue)                    # no rephrase of an opening prompt
+    assert session.turns[-1].control == "dont_understand"
+    assert session.facts == [] and session.outcomes == [] and session.raw_answers == []
+    assert session.next_question().startswith(REPHRASE_PREFIX)
 
 
 # ============================================================ 0.3 never asked twice
@@ -273,7 +275,8 @@ def test_no_item_is_asked_the_same_thing_twice(ws, persona):
         raise AssertionError("interview did not finish")
     assert_no_repeat(s)
     assert_provenance_traceable(s)
-    follow_ups = Counter(a["fact"] for a in s.asked if not a["why"] and a["intent"] != "source_scope")
+    follow_ups = Counter(a["fact"] for a in s.asked
+                         if a["fact"] and not a["why"] and a["intent"] != "source_scope")   # items only
     assert max(follow_ups.values()) <= 3
 
 

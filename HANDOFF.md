@@ -5,7 +5,7 @@ reads it before starting and updates it when they finish. The Drive *PROJECT IND
 here instead of keeping its own copy. Older handoff notes are in [`docs/handoffs/`](docs/handoffs/)
 and are history: nothing in them is an open task unless this page lists it.
 
-**Last updated:** 2026-10-25 (America/Los_Angeles) by Claude (chat): Michael's go-ahead for A2 P1 and the recap wording, with the brief linked in §4. Earlier the same day, Claude Code recorded Soul's review of PR #16 and pushed the offered-skip logging fix.
+**Last updated:** 2026-10-25 (America/Los_Angeles) by Claude Code: A2 P1 built as a draft PR stacked on #16 (verified; see §4).
 
 ## Ground rules (unchanged)
 
@@ -111,6 +111,15 @@ Soul reviews each before the next starts. Ready-to-run Claude Code briefs are in
        correction.
   - **Next (Michael's go-ahead, 2026-10-25):** P1 as a new draft PR stacked on #16, then the 0.4 wording change as
     its own draft stacked on that. Brief: [`docs/briefs/A2-P1-and-recap-wording.md`](docs/briefs/A2-P1-and-recap-wording.md).
+  - **A2 P1: built, draft PR** (branch `ccr-346c90bc-1umwms-a2-p1`, stacked on #16). Tests: `tests/test_followup_p1.py`.
+    - Free-recall openers; Soul's scope wording with partial and ambiguous scope; "Huh?" never stored at
+      openers, recaps, the final check, the record question or correction prompts.
+    - Held questions offered at the recap (at most 2, with permission, basis first). Break offer on tiredness;
+      "keep going" says so and holds the rest of the section in Open Questions.
+    - Patterns ("always", "every Friday") stored as patterns, with "Is there one time that stands out…?".
+      Certainty kept once, in the person's words. "I don't know" shown in the interview record.
+    - Four tests changed on purpose (table in the PR).
+  - **Next:** the 0.4 wording draft, stacked on A2 P1.
 - **B. Case-level document memory** (engine + web). Attach uploads and interviews to one case record.
   Start each interview from a short "what's on file" brief the client confirms or corrects, keeping
   where each fact came from (document or client) separate. Voice-kit checkpoints load into the same case.

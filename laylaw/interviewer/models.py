@@ -207,6 +207,9 @@ class Fact:
     # unspecified. None while the basis is still unknown and unasked.
     source_turn: Optional[int] = None
     source_scope: Optional[str] = None
+    # How sure the interviewee said they are, in their words, asked once at first mention:
+    # {"text", "turn", "at", "scale"}. A later change is added as a new reading; none is replaced.
+    certainty_readings: list[dict] = field(default_factory=list)
 
     def __post_init__(self):
         if self.kind is None:
