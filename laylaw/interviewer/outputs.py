@@ -257,6 +257,11 @@ def open_questions(s: "InterviewSession") -> list[str]:
     for f in s.facts:
         if f.status != FactStatus.CURRENT or f.question_context:
             continue
+        # Follow-ups deferred by the question budget must survive in the
+        # dedicated Open Questions export, not just fact-table notes.
+        for note in f.open_questions:
+            if note.startswith("Deferred for follow-up: "):
+                out.append(f"{f.id}: {note}")
         if f.date is None or f.date.precision == DatePrecision.UNKNOWN:
             out.append(f"{f.id}: when this happened (not yet known)")
         if not f.people_present:
