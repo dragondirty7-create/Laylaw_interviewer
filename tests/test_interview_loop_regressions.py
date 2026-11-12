@@ -136,3 +136,12 @@ def test_unknown_source_still_gets_basis_question(ws):
     s.next_question()
     s.answer("The package was missing.")
     assert any(q.text == "How do you know that?" for q in s.queue)
+
+
+def test_routine_open_questions_do_not_treat_habit_as_one_event(ws):
+    s = new_session(ws, sections=["Current parenting routine"])
+    s.next_question()
+    s.answer("I usually check the shared calendar every Tuesday.")
+    exported = outputs.open_questions(s)
+    assert not any("when this happened" in item for item in exported)
+    assert not any("who was present" in item for item in exported)
