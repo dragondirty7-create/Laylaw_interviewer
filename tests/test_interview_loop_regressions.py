@@ -122,3 +122,17 @@ def test_section_source_without_fact_link_gets_explicit_followup(ws):
     record = s.records[0]
     assert record.related_fact_ids == []   # association not assumed
     assert any(record.id in note and "which fact(s)" in note for note in outputs.open_questions(s))
+
+
+def test_does_not_reask_clear_firsthand_source(ws):
+    s = new_session(ws)
+    s.next_question()
+    s.answer("I saw the courier arrive at the office.")
+    assert all(q.text != "How do you know that?" for q in s.queue)
+
+
+def test_unknown_source_still_gets_basis_question(ws):
+    s = new_session(ws)
+    s.next_question()
+    s.answer("The package was missing.")
+    assert any(q.text == "How do you know that?" for q in s.queue)
