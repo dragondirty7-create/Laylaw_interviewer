@@ -7,6 +7,7 @@ import pytest
 from conftest import new_session
 from laylaw.interviewer import SessionStatus
 from laylaw.interviewer.session import _is_nothing_more
+from laylaw.interviewer import outputs
 
 
 @pytest.mark.parametrize("answer", [
@@ -92,3 +93,32 @@ def test_natural_pause_intents_save_without_making_facts(ws, answer):
     reopened = s.workspace.load_session(s.interview_id)
     assert reopened.status == SessionStatus.PAUSED
     assert first.endswith(reopened.pending.text)
+
+
+def test_deferred_questions_reach_open_questions_export(ws):
+    s = new_session(ws)
+    s.next_question()
+    s.answer("A package was left at the gate.")
+    deferred = [x for x in s.facts[0].open_questions if x.startswith("Deferred for follow-up: ")]
+    assert deferred
+    exported = outputs.open_questions(s)
+    assert all(any(note in item for item in exported) for note in deferred)
+
+
+def test_section_source_without_fact_link_gets_explicit_followup(ws):
+    s = new_session(ws)
+    s.next_question()
+    s.answer("I saw a blue truck. I heard a horn.")
+    for _ in range(30):
+        question = s.next_question()
+        if question == "Is there anything that might help document or date this?":
+            break
+        assert question is not None
+        s.answer("skip")
+    else:
+        raise AssertionError("never reached the section record prompt")
+    s.answer("There might be a voicemail recording.")
+    assert len(s.records) == 1
+    record = s.records[0]
+    assert record.related_fact_ids == []   # association not assumed
+    assert any(record.id in note and "which fact(s)" in note for note in outputs.open_questions(s))
