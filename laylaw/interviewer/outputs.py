@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 
 from .guard import assert_no_advocacy
 from .models import (
-    Certainty, DatePrecision, Fact, FactStatus, ReviewStatus, SourceOfKnowledge, SupportingSourceType,
+    Certainty, DatePrecision, EventKind, Fact, FactStatus, ReviewStatus, SourceOfKnowledge, SupportingSourceType,
     TranscriptStatus,
 )
 
@@ -262,10 +262,12 @@ def open_questions(s: "InterviewSession") -> list[str]:
         for note in f.open_questions:
             if note.startswith("Deferred for follow-up: "):
                 out.append(f"{f.id}: {note}")
-        if f.date is None or f.date.precision == DatePrecision.UNKNOWN:
-            out.append(f"{f.id}: when this happened (not yet known)")
-        if not f.people_present:
-            out.append(f"{f.id}: who was present (not yet stated)")
+        # Routine descriptions are not single dated events with attendees.
+        if f.kind != EventKind.ROUTINE:
+            if f.date is None or f.date.precision == DatePrecision.UNKNOWN:
+                out.append(f"{f.id}: when this happened (not yet known)")
+            if not f.people_present:
+                out.append(f"{f.id}: who was present (not yet stated)")
     for d in s.discrepancies:
         if d.status == "unresolved":
             out.append(f"{d.id}: {discrepancy_label(d)} {d.description}")
