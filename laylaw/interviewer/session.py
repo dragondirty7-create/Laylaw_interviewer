@@ -637,8 +637,9 @@ class InterviewSession:
             qs.append(PendingQuestion("clarify", "About when was this?", fact.id, "date"))
         if incident and not fact.people_present:
             qs.append(PendingQuestion("clarify", "Who else was there?", fact.id, "people_present"))
-        if fact.source in (SourceOfKnowledge.PERSONAL_OBSERVATION, SourceOfKnowledge.UNCERTAIN,
-                           SourceOfKnowledge.UNKNOWN) and not fact.told_by:
+        # Known firsthand or secondhand basis was already supplied in the
+        # interviewee's words. Never ask them to restate that same source.
+        if fact.source in (SourceOfKnowledge.UNCERTAIN, SourceOfKnowledge.UNKNOWN) and not fact.told_by:
             qs.append(PendingQuestion("clarify", "How do you know that?", fact.id, "source"))
         if fact.certainty == Certainty.HEDGED:
             qs.append(PendingQuestion("clarify", CERTAINTY_QUESTION, fact.id, "certainty"))
