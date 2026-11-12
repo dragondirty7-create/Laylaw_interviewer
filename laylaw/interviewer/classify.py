@@ -186,7 +186,8 @@ def parse_date(text: Optional[str]) -> Optional[DateValue]:
 _CONTROL_PATTERNS = {
     "save_later": r"(?:save(?: it)?(?: and| &)? (?:finish|continue|come back)(?: (?:it|this))? later"
                   r"|save and exit|let'?s stop (?:here|for now)(?: and continue later)?|pause (?:here|for now)"
-                  r"|finish later)",
+                  r"|finish later|(?:can|could) we (?:pause|stop)(?: (?:here|for now|right now))?"
+                  r"|i (?:need|want) to (?:pause|stop)(?: (?:here|for now|right now))?)",
     "skip": r"(?:skip(?: (?:this|that|it|this one|this question))?|pass|next question"
             r"|i'?d rather not (?:say|answer)|prefer not to (?:say|answer))",
     "not_sure": r"(?:not sure|i'?m not sure|i don'?t know|dunno|i don'?t remember|i can'?t remember"
@@ -195,7 +196,7 @@ _CONTROL_PATTERNS = {
 
 
 def detect_control(text: str) -> Optional[str]:
-    t = re.sub(r"[.!]+$", "", text.strip().lower())
+    t = re.sub(r"[.!?]+$", "", text.strip().lower())
     for name, pattern in _CONTROL_PATTERNS.items():
         if re.fullmatch(pattern, t):
             return name
