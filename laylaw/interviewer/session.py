@@ -706,6 +706,11 @@ class InterviewSession:
                                provenance_type=SUPPORTING_TO_PROVENANCE[kind], source_type=kind,
                                related_fact_ids=[fact_id] if fact_id else [])
         self.records.append(rec)
+        if fact_id is None and self.current_section:
+            # A section-level source may support one or several facts. Do
+            # not guess which: keep the link as an explicit follow-up.
+            self.open_questions.append(
+                f"{rec.id}: confirm which fact(s) in {self.current_section} this source relates to")
         if fact_id:
             f = self.get_fact(fact_id)
             f.possible_records.append(rec.id)
