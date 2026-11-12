@@ -656,7 +656,8 @@ class InterviewSession:
         # Exactly one supporting-record prompt per section, after all facts.
         # Rebuild the tail as further facts arrive; retain earlier clarifications.
         self.queue = [q for q in self.queue if q.kind not in ("record_hook", "recap")] + qs[:limit] + [
-            PendingQuestion("record_hook", RECORD_HOOK_QUESTION)
+            PendingQuestion("record_hook", RECORD_HOOK_QUESTION,
+                            fact.id if len(self._current_facts(section=fact.topic)) == 1 else None)
         ] + self._recap_questions()
 
     @staticmethod
