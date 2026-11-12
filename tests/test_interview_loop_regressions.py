@@ -145,3 +145,18 @@ def test_routine_open_questions_do_not_treat_habit_as_one_event(ws):
     exported = outputs.open_questions(s)
     assert not any("when this happened" in item for item in exported)
     assert not any("who was present" in item for item in exported)
+
+
+def test_completion_response_after_next_question_does_not_restart(ws):
+    s = new_session(ws)
+    s.next_question()
+    s.answer("I saw a blue van arrive at the lot.",
+             people_present=["interviewee"], location="lot")
+    assert s.next_question() == "About when was this?"
+    s.answer("around May 2025")
+    assert s.next_question() == "What happened next?"
+    before = len(s.facts)
+    s.answer("Nope, nothing else.")
+    assert len(s.facts) == before
+    assert all(q.kind != "clarify" for q in s.queue)
+    assert s.next_question() == "Is there anything that might help document or date this?"
