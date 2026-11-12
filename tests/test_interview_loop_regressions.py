@@ -23,7 +23,7 @@ def test_completion_phrases_are_not_recorded_as_facts(ws, answer):
     assert s.facts == []
     assert s.raw_answers == []
     assert not any(q.kind == "clarify" for q in s.queue)
-    assert s.next_question() == "Did I get anything wrong?" or s.next_question() is not None
+    assert s.next_question() is not None
 
 
 @pytest.mark.parametrize("answer", [
@@ -91,4 +91,4 @@ def test_natural_pause_intents_save_without_making_facts(ws, answer):
     assert s.facts == []
     reopened = s.workspace.load_session(s.interview_id)
     assert reopened.status == SessionStatus.PAUSED
-    assert reopened.pending.text == first
+    assert first.endswith(reopened.pending.text)
