@@ -1,0 +1,162 @@
+"""Synthetic regression coverage for short, accurate interviewer turns.
+
+This file contains no client records or real-world case material.
+"""
+import pytest
+
+from conftest import new_session
+from laylaw.interviewer import SessionStatus
+from laylaw.interviewer.session import _is_nothing_more
+from laylaw.interviewer import outputs
+
+
+@pytest.mark.parametrize("answer", [
+    "No", "No.", "No, that's all.", "No that's all", "No, that's it.",
+    "No that is all", "Nope, nothing else.", "Nah, nothing more.",
+    "That's everything.", "That's all.", "That is all.", "I think that's it.",
+    "Nothing else", "Nothing more", "No, I think that's it.", "Nope, that's everything!",
+])
+def test_completion_phrases_are_not_recorded_as_facts(ws, answer):
+    s = new_session(ws, sections=["Specific incidents"])
+    assert _is_nothing_more(answer)
+    s.next_question()
+    s.answer(answer)
+    assert s.facts == []
+    assert s.raw_answers == []
+    assert not any(q.kind == "clarify" for q in s.queue)
+    assert s.next_question() is not None
+
+
+@pytest.mark.parametrize("answer", [
+    "No, then a neighbor came by.",
+    "No, the gate was left open.",
+    "No, that's all I could see before the lights went out.",
+    "Nothing else happened until the following morning.",
+    "Nope, nothing more was said but the car was gone.",
+])
+def test_content_qualifications_are_not_treated_as_endings(ws, answer):
+    assert not _is_nothing_more(answer)
+    s = new_session(ws)
+    s.next_question()
+    s.answer(answer)
+    assert any(f.statement == answer for f in s.facts)
+
+
+def test_five_incidents_cap_clarifications_and_keep_deferred_questions(ws):
+    s = new_session(ws)
+    s.next_question()
+    s.answer(
+        "A package was left at the gate. A courier called the office. "
+        "A receptionist signed the log. The delivery van left. A supervisor called back."
+    )
+    followups = [q for q in s.queue if q.kind == "clarify"]
+    hooks = [q for q in s.queue if q.kind == "record_hook"]
+    assert len(s.facts) == 5
+    assert len(followups) <= 15
+    assert len(hooks) == 1
+    assert any("Deferred for follow-up" in item for f in s.facts for item in f.open_questions)
+
+
+def test_routine_does_not_prompt_event_location_or_sequence(ws):
+    s = new_session(ws, sections=["Current parenting routine"])
+    s.next_question()
+    s.answer("I usually check the shared calendar every Tuesday.")
+    prompts = [q.text for q in s.queue]
+    assert "Where did this happen?" not in prompts
+    assert "Who else was there?" not in prompts
+    assert "What happened next?" not in prompts
+    assert "Was there a particular time that was different?" in prompts
+
+
+def test_section_record_hook_is_asked_once_even_with_multiple_facts(ws):
+    s = new_session(ws)
+    s.next_question()
+    s.answer("I saw a blue truck. I heard a horn.")
+    assert sum(q.kind == "record_hook" for q in s.queue) == 1
+    prompts = [q.text for q in s.queue]
+    assert prompts.index("Is there anything that might help document or date this?") > max(
+        i for i, q in enumerate(s.queue) if q.kind == "clarify"
+    )
+
+
+@pytest.mark.parametrize("answer", [
+    "Can we pause right now?", "Could we stop here?", "I want to pause for now.",
+    "I need to stop right now.", "Let's stop for now.",
+])
+def test_natural_pause_intents_save_without_making_facts(ws, answer):
+    s = new_session(ws)
+    first = s.next_question()
+    assert first is not None
+    assert s.answer(answer) == "Saved. When you come back, we'll pick up at the same question."
+    assert s.status == SessionStatus.PAUSED
+    assert s.facts == []
+    reopened = s.workspace.load_session(s.interview_id)
+    assert reopened.status == SessionStatus.PAUSED
+    assert first.endswith(reopened.pending.text)
+
+
+def test_deferred_questions_reach_open_questions_export(ws):
+    s = new_session(ws)
+    s.next_question()
+    s.answer("A package was left at the gate.")
+    deferred = [x for x in s.facts[0].open_questions if x.startswith("Deferred for follow-up: ")]
+    assert deferred
+    exported = outputs.open_questions(s)
+    assert all(any(note in item for item in exported) for note in deferred)
+
+
+def test_section_source_without_fact_link_gets_explicit_followup(ws):
+    s = new_session(ws)
+    s.next_question()
+    s.answer("I saw a blue truck. I heard a horn.")
+    for _ in range(30):
+        question = s.next_question()
+        if question == "Is there anything that might help document or date this?":
+            break
+        assert question is not None
+        s.answer("skip")
+    else:
+        raise AssertionError("never reached the section record prompt")
+    s.answer("There might be a voicemail recording.")
+    assert len(s.records) == 1
+    record = s.records[0]
+    assert record.related_fact_ids == []   # association not assumed
+    assert any(record.id in note and "which fact(s)" in note for note in outputs.open_questions(s))
+
+
+def test_does_not_reask_clear_firsthand_source(ws):
+    s = new_session(ws)
+    s.next_question()
+    s.answer("I saw the courier arrive at the office.")
+    assert all(q.text != "How do you know that?" for q in s.queue)
+
+
+def test_unknown_source_still_gets_basis_question(ws):
+    s = new_session(ws)
+    s.next_question()
+    s.answer("The package was missing.")
+    assert any(q.text == "How do you know that?" for q in s.queue)
+
+
+def test_routine_open_questions_do_not_treat_habit_as_one_event(ws):
+    s = new_session(ws, sections=["Current parenting routine"])
+    s.next_question()
+    s.answer("I usually check the shared calendar every Tuesday.")
+    exported = outputs.open_questions(s)
+    assert not any("when this happened" in item for item in exported)
+    assert not any("who was present" in item for item in exported)
+
+
+def test_completion_response_after_next_question_does_not_restart(ws):
+    s = new_session(ws)
+    s.next_question()
+    s.answer("I saw a blue van arrive at the lot.",
+             people_present=["interviewee"], location="lot")
+    assert s.next_question() == "About when was this?"
+    s.answer("around May 2025")
+    assert s.next_question() == "What happened next?"
+    before = len(s.facts)
+    s.answer("Nope, nothing else.")
+    assert len(s.facts) == before
+    assert all(q.kind != "clarify" for q in s.queue)
+    assert s.next_question() == "Is there anything that might help document or date this?"

@@ -21,6 +21,7 @@ class SectionSpec:
     followups: tuple = ()              # (field, question) pairs for procedural sections
     default_source: Optional[SourceOfKnowledge] = None
     optional_note: Optional[str] = None
+    max_clarifications: int = 3       # unasked questions remain in Open Questions
 
 
 # ---------------------------------------------------------------- family law

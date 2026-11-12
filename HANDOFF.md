@@ -71,6 +71,13 @@ be reverted on the integration branch before it merges.
    - The voice kit adds a spoken recap, a "Is anything wrong or missing?" check and a full text
      checkpoint at the end of every section.
 
+### 2026-11-11 synthetic-only repair candidate (draft PR #26)
+
+- **Patch proposed, not shipped:** [PR #26](https://github.com/dragondirty7-create/Laylaw_interviewer/pull/26) is based on the unmerged integration branch, not main.
+- Candidate A repair: completion phrases no longer restart the fact-clarification loop; direct pause requests save the session; each fact queues at most three relevant follow-ups and defers the rest as open questions; supporting-record prompt is asked once per section.
+- Synthetic regressions added. The action is **pending CI and Soul/Claude review**. Do not call it complete or safe for real records without passing checks and the established privacy/security gates.
+- Related unresolved items: case-level document awareness (B), phone save and security hardening (C), and general AI form-guidance reliability outside this repository. No private case details belong here.
+
 ## 4. Next steps
 
 Each one is its own PR from `main` (after this integration lands) or from `integrate/one-laylaw`.

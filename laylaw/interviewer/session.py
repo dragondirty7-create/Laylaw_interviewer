@@ -622,30 +622,44 @@ class InterviewSession:
             self.set_fact_date(f.id, phrase)
 
     def _queue_clarifications(self, fact: Fact) -> None:
-        """One question at a time, open-ended, never suggesting an answer."""
-        qs: list[PendingQuestion] = []
+        """Ask at most a few relevant follow-ups; preserve the rest as open questions.
+
+        Keep dated incident questions in their established order for existing
+        sessions; never ask event questions about an ongoing routine or state.
+        """
         if fact.source == SourceOfKnowledge.REQUEST:
             return
-        if fact.date is None:
+        spec = spec_for(fact.topic)
+        routine = fact.kind == EventKind.ROUTINE or spec.kind == "routine"
+        incident = fact.kind == EventKind.INCIDENT or fact.topic == "Specific incidents"
+        qs: list[PendingQuestion] = []
+        if not routine and fact.date is None:
             qs.append(PendingQuestion("clarify", "About when was this?", fact.id, "date"))
-        if not fact.people_present:
+        if incident and not fact.people_present:
             qs.append(PendingQuestion("clarify", "Who else was there?", fact.id, "people_present"))
-        if not fact.location and fact.kind != EventKind.ROUTINE:
-            qs.append(PendingQuestion("clarify", "Where did this happen?", fact.id, "location"))
-        if fact.source in (SourceOfKnowledge.PERSONAL_OBSERVATION, SourceOfKnowledge.UNCERTAIN,
-                           SourceOfKnowledge.UNKNOWN) and not fact.told_by:
+        # Known firsthand or secondhand basis was already supplied in the
+        # interviewee's words. Never ask them to restate that same source.
+        if fact.source in (SourceOfKnowledge.UNCERTAIN, SourceOfKnowledge.UNKNOWN) and not fact.told_by:
             qs.append(PendingQuestion("clarify", "How do you know that?", fact.id, "source"))
         if fact.certainty == Certainty.HEDGED:
             qs.append(PendingQuestion("clarify", CERTAINTY_QUESTION, fact.id, "certainty"))
-        if fact.kind == EventKind.ROUTINE:
+        if incident and not fact.location:
+            qs.append(PendingQuestion("clarify", "Where did this happen?", fact.id, "location"))
+        if routine:
             qs.append(PendingQuestion("clarify", "Was there a particular time that was different?",
                                       fact.id, "next"))
-        else:
+        elif incident:
             qs.append(PendingQuestion("clarify", "What happened next?", fact.id, "next"))
-        qs.append(PendingQuestion("record_hook", RECORD_HOOK_QUESTION, fact.id))
-        # End-of-section check comes after this fact's clarifications. The recap
-        # text itself is built when asked, so it reflects everything recorded.
-        self.queue = [q for q in self.queue if q.kind != "recap"] + qs + self._recap_questions()
+
+        limit = max(0, spec.max_clarifications)
+        for question in qs[limit:]:
+            fact.open_questions.append(f"Deferred for follow-up: {question.text}")
+        # Exactly one supporting-record prompt per section, after all facts.
+        # Rebuild the tail as further facts arrive; retain earlier clarifications.
+        self.queue = [q for q in self.queue if q.kind not in ("record_hook", "recap")] + qs[:limit] + [
+            PendingQuestion("record_hook", RECORD_HOOK_QUESTION,
+                            fact.id if len(self._current_facts(section=fact.topic)) == 1 else None)
+        ] + self._recap_questions()
 
     @staticmethod
     def _recap_questions() -> list[PendingQuestion]:
@@ -683,7 +697,8 @@ class InterviewSession:
 
     # ----------------------------------------------------------- supporting sources
     def _apply_record_hook(self, q, text: str, source_type: Optional[SupportingSourceType] = None) -> None:
-        if re.fullmatch(r"(?i)\s*(no|nope|nothing|none|not that i know of|i don'?t think so)\.?\s*", text):
+        if _is_nothing_more(text) or re.fullmatch(
+                r"(?i)\s*(?:not that i know of|i don'?t think so)\.?\s*", text):
             return
         fact_id = getattr(q, "fact_id", None)
         kind = SupportingSourceType(source_type) if source_type else classify.classify_supporting_source(text)
@@ -692,6 +707,11 @@ class InterviewSession:
                                provenance_type=SUPPORTING_TO_PROVENANCE[kind], source_type=kind,
                                related_fact_ids=[fact_id] if fact_id else [])
         self.records.append(rec)
+        if fact_id is None and self.current_section:
+            # A section-level source may support one or several facts. Do
+            # not guess which: keep the link as an explicit follow-up.
+            self.open_questions.append(
+                f"{rec.id}: confirm which fact(s) in {self.current_section} this source relates to")
         if fact_id:
             f = self.get_fact(fact_id)
             f.possible_records.append(rec.id)
@@ -1239,10 +1259,14 @@ class InterviewSession:
 
 
 _NOTHING_MORE = re.compile(
-    r"(?i)\s*(?:no|nope|none|nothing(?: else)?(?: happened)?|that'?s (?:it|all)|not really|"
-    r"i don'?t (?:know|remember)|n/?a)[.!]?\s*")
-_NO_WORD = (r"(?:no|nope|nah|none|nothing|looks (?:right|good|fine)|that'?s (?:right|correct|it|all)|correct|"
-            r"all good|nothing else|i think (?:that'?s|it'?s) (?:it|all|right))")
+    r"(?i)\s*(?:"
+    r"(?:no|nope|nah)(?:\s*,?\s*(?:that['’]s (?:all|it|everything)|that is all|"
+    r"nothing (?:else|more)|i think that['’]s it))?"
+    r"|none|nothing(?: else| more| happened)?|that['’]s (?:it|all|everything)"
+    r"|that is all|i think that['’]s it|not really|"
+    r"i don['’]t (?:know|remember)|n/?a)[.!]?\s*")
+_NO_WORD = (r"(?:no|nope|nah|none|nothing|looks (?:right|good|fine)|that'?s (?:right|correct|it|all|everything)|correct|"
+            r"all good|nothing else|that is all|i think (?:that'?s|it'?s) (?:it|all|right))")
 _NO = re.compile(rf"(?i)\s*{_NO_WORD}(?:[\s,.!;:-]+{_NO_WORD})*[.!]?\s*")
 
 
